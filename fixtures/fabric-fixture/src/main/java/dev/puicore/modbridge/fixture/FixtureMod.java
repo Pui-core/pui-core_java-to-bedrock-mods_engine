@@ -21,7 +21,8 @@ import org.slf4j.LoggerFactory;
  * 検証用 fixture。登録内容は意図的に最小限にし、Bedrock 側での見え方と失敗条件を切り分けやすくする。
  * <ul>
  *   <li>{@code pmb_fixture:test_ingot} — 単純なアイテム（スタック上限 16）</li>
- *   <li>{@code pmb_fixture:test_block} — 単純な立方体ブロックとそのアイテム</li>
+ *   <li>{@code pmb_fixture:test_block} — 単純な立方体ブロックとそのアイテム。ツルハシで壊すとドロップする
+ *       （{@code minecraft:mineable/pickaxe} タグ）</li>
  * </ul>
  */
 public final class FixtureMod implements ModInitializer {

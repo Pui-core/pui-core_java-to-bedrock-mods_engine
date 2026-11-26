@@ -15,7 +15,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 
 ## 必要なもの
 
-- JDK 25 以上（Hydraulic の要件。開発は JDK 25 と 26 で確認）
+- JDK 25 以上（Hydraulic の要件。CI は JDK 25、手元の実測は JDK 26.0.1）
 - Git Bash または Linux のシェル（スパイク用スクリプトの実行に使う）
 - Gradle の個別インストールは不要（Wrapper 同梱）
 
@@ -47,9 +47,17 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh                 # 起動を�
 MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実機から接続するとき
 ```
 
-- ログは `evidence/raw/`（Git 管理外）に保存されます。公開 IP が含まれることがあるため、コミットしないでください。
-- 自動停止モードでは、Geyser の待受を `127.0.0.1` に限定し、外部への STUN 問い合わせを止めます。2 回目以降の起動から有効です。
-- 実機から接続するときは `--keep-running` を使います。同じ LAN の Bedrock クライアントから、この PC の LAN アドレスの UDP/TCP 19132 へ接続してください。
+- ログは `evidence/raw/`（Git 管理外）に保存します。保存時に IP アドレスを伏せ字にしますが、念のためコミットしないでください。
+- 成否は Geyser の起動完了行で判定します。起動に失敗したり時間切れになったりした場合は、その回のサーバープロセスだけを強制終了して、終了コード 1 を返します。
+- 作業フォルダーには、空のフォルダーか、このスクリプトが作ったフォルダー（印 `.modbridge-spike` があるもの）だけを使います。
+- 2 回目以降の起動では、Geyser の設定を次のように変えます。
+  - 外部への STUN 問い合わせを止める。
+  - RakNet（UDP 19132）と NetherNet（UDP 19133、シグナリングは TCP 19132）の両方を受ける。
+  - 自動停止モードでは待受を `127.0.0.1` に限定する。
+
+  初回起動は Geyser の設定を生成する回なので、既定設定のまま動きます。
+- 実機から接続するときは `--keep-running` を使います。同じ LAN の Bedrock クライアントで「サーバーを追加」を選び、この PC の LAN アドレスとポート 19132 を入力してください。
+- **`--keep-running` は LAN 全体に公開されます**。Java 側は `online-mode=false` で、ホワイトリストもありません。信頼できる LAN でだけ使い、確認が終わったらすぐ停止してください。
 
 ## 構成
 

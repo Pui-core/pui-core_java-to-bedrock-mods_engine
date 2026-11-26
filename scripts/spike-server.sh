@@ -20,6 +20,8 @@ WORK="${SPIKE_DIR:-$ROOT/local/spike-server}"
 EVIDENCE="${SPIKE_EVIDENCE_DIR:-$ROOT/evidence/raw}"
 TIMEOUT_SEC="${SPIKE_TIMEOUT_SEC:-600}"
 KEEP_RUNNING=false
+mkdir -p "$WORK" "$EVIDENCE"
+WORK="$(cd "$WORK" && pwd)"; EVIDENCE="$(cd "$EVIDENCE" && pwd)"   # 相対パス指定でも cd 後に壊れないよう絶対化
 [[ "${1:-}" == "--keep-running" ]] && KEEP_RUNNING=true
 
 # 固定版（docs/adr/0002 と gradle/libs.versions.toml を同時に更新する。MC と LOADER は CI が照合する）
@@ -48,6 +50,7 @@ redact() {
 
 [[ "${MODBRIDGE_ACCEPT_EULA:-}" == "true" ]] || die "Minecraft EULA への同意が必要。同意する場合だけ MODBRIDGE_ACCEPT_EULA=true を付けて実行する"
 command -v java >/dev/null || die "java が見つからない"
+command -v jps >/dev/null || die "jps が見つからない（JRE ではなく JDK 25 以上を使う）"
 JAVA_FEATURE="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java.specification.version = //p')"
 (( JAVA_FEATURE >= 25 )) || die "Java 25 以上が必要（検出: $JAVA_FEATURE）"
 
@@ -120,12 +123,23 @@ if $KEEP_RUNNING; then
   exit 0
 fi
 
+# この起動の java だけを OS の PID で強制終了する（Git Bash では bash 側の kill が Windows の java に届かないため）
+force_kill_server() {
+  local pid
+  pid="$(jps -v 2>/dev/null | awk -v id="-Dmodbridge.spike=$STAMP" 'index($0, id) {print $1}')"
+  [[ -n "$pid" ]] || return 0
+  echo "[spike] 強制終了: java pid $pid" >&2
+  if command -v taskkill >/dev/null 2>&1; then taskkill //F //PID "$pid" >/dev/null 2>&1 || true; else kill -9 "$pid" 2>/dev/null || true; fi
+}
+
 # 停止要求ファイルが置かれるまで標準入力を開いたままにし、置かれたら stop を送る。
 # （Git Bash では名前付きパイプが Windows ネイティブプロセスに届かないため、通常のパイプを使う）
 STOP_REQ="$WORK/.spike-stop"; EXITED="$WORK/.spike-exit"; rm -f "$STOP_REQ" "$EXITED"
 { until [[ -f "$STOP_REQ" || -f "$EXITED" ]]; do sleep 1; done; echo stop; } \
   | { java "${JAVA_OPTS[@]}" -jar fabric-server-launch.jar nogui 2>&1 | redact >> "$LOG"; echo "${PIPESTATUS[0]}" > "$EXITED"; } &
 PIPE_PID=$!
+# 中断（Ctrl-C・kill）時もサーバーを残さない
+trap 'force_kill_server; touch "$STOP_REQ"; exit 130' INT TERM
 
 # Geyser の起動完了行（"Run /geyser help"）で成功と判定する。バニラの Done だけでは成功にしない。
 result=""
@@ -137,15 +151,6 @@ while :; do
   if (( $(date +%s) >= deadline )); then result="timeout (${TIMEOUT_SEC}s)"; break; fi
   sleep 2
 done
-# この起動の java だけを OS の PID で強制終了する（Git Bash では bash 側の kill が Windows の java に届かないため）
-force_kill_server() {
-  local pid
-  pid="$(jps -v 2>/dev/null | awk -v id="-Dmodbridge.spike=$STAMP" 'index($0, id) {print $1}')"
-  [[ -n "$pid" ]] || return 0
-  echo "[spike] 強制終了: java pid $pid" >&2
-  if command -v taskkill >/dev/null 2>&1; then taskkill //F //PID "$pid" >/dev/null 2>&1 || true; else kill -9 "$pid" 2>/dev/null || true; fi
-}
-
 if [[ "$result" == "started" ]]; then
   touch "$STOP_REQ"   # 起動完了後だけ stop を送る（起動中の stop は受け付けられない）
   for _ in $(seq 60); do [[ -f "$EXITED" ]] && break; sleep 2; done
@@ -157,6 +162,7 @@ if [[ ! -f "$EXITED" ]]; then
   for _ in $(seq 15); do [[ -f "$EXITED" ]] && break; sleep 2; done
 fi
 wait "$PIPE_PID" 2>/dev/null || true
+trap - INT TERM
 rm -f "$STOP_REQ" "$EXITED"
 
 [[ "$result" == "started" ]] || die "起動を確認できなかった（$result）。ログ: $LOG"

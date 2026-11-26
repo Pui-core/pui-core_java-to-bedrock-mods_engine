@@ -47,7 +47,7 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh                 # 起動を�
 MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実機から接続するとき
 ```
 
-- ログは `evidence/raw/`（Git 管理外）に保存します。保存時に IP アドレスを伏せ字にしますが、念のためコミットしないでください。
+- ログは `evidence/raw/`（Git 管理外）に保存します。保存時に IP アドレスを伏せ字にしますが、念のためコミットしないでください。作業フォルダー内のサーバー自身のログ（`local/spike-server/logs/`）は伏せ字にしていません。
 - 成否は Geyser の起動完了行で判定します。起動に失敗したり時間切れになったりした場合は、その回のサーバープロセスだけを強制終了して、終了コード 1 を返します。
 - 作業フォルダーには、空のフォルダーか、このスクリプトが作ったフォルダー（印 `.modbridge-spike` があるもの）だけを使います。
 - 2 回目以降の起動では、Geyser の設定を次のように変えます。

@@ -1,0 +1,76 @@
+# PuiModBridge（仮称）
+
+Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
+
+> **現在の状態: v0.0.1（開発基盤・技術検証）**
+> 互換機能はまだありません。今あるのはビルド基盤、`doctor` CLI、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+
+## 対応モード
+
+| モード | 実行主体 | 状態 |
+|---|---|---|
+| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | サーバー側の起動と登録を確認済み。Bedrock 実機からの接続は未確認（[ADR-0002](docs/adr/0002-v0.0.1-target-versions-and-spike.md)） |
+| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | 未着手（v0.3.0） |
+| C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
+
+## 必要なもの
+
+- JDK 25 以上（Hydraulic の要件。CI は JDK 25、手元の実測は JDK 26.0.1）
+- Git Bash または Linux のシェル（スパイク用スクリプトの実行に使う）
+- Gradle の個別インストールは不要（Wrapper 同梱）
+
+## ビルドとテスト
+
+```sh
+./gradlew build                 # core / cli のビルドと単体テスト
+./gradlew :cli:run --args=doctor
+./gradlew :cli:installDist      # cli/build/install/modbridge/bin/modbridge を生成
+```
+
+`modbridge` の終了コードは `0`=成功、`1`=診断失敗、`2`=使い方の誤りです。
+
+## fixture MOD
+
+`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot` と独自ブロック `pmb_fixture:test_block` を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
+
+```sh
+cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.1.jar
+```
+
+## 接続スパイク（Mode A）
+
+Fabric 専用サーバー、Geyser-Fabric、Hydraulic、fixture MOD を `local/spike-server` に組んで起動します。取得物はすべて固定版で、SHA-256 照合が通ったものだけを使います。
+
+```sh
+# Minecraft EULA（https://aka.ms/MinecraftEULA）に同意する場合だけ環境変数を付ける
+MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh                 # 起動を確認したら自動で停止
+MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実機から接続するとき
+```
+
+- ログは `evidence/raw/`（Git 管理外）に保存します。保存時に IP アドレスを伏せ字にしますが、念のためコミットしないでください。作業フォルダー内のサーバー自身のログ（`local/spike-server/logs/`）は伏せ字にしていません。
+- 成否は Geyser の起動完了行で判定します。起動に失敗したり時間切れになったりした場合は、その回のサーバープロセスだけを強制終了して、終了コード 1 を返します。
+- 作業フォルダーには、空のフォルダーか、このスクリプトが作ったフォルダー（印 `.modbridge-spike` があるもの）だけを使います。
+- 2 回目以降の起動では、Geyser の設定を次のように変えます。
+  - 外部への STUN 問い合わせを止める。
+  - RakNet（UDP 19132）と NetherNet（UDP 19133、シグナリングは TCP 19132）の両方を受ける。
+  - 自動停止モードでは待受を `127.0.0.1` に限定する。
+
+  初回起動は Geyser の設定を生成する回なので、既定設定のまま動きます。
+- 実機から接続するときは `--keep-running` を使います。同じ LAN の Bedrock クライアントで「サーバーを追加」を選び、この PC の LAN アドレスとポート 19132 を入力してください。
+- **`--keep-running` は LAN 全体に公開されます**。Java 側は `online-mode=false` で、ホワイトリストもありません。信頼できる LAN でだけ使い、確認が終わったらすぐ停止してください。
+
+## 構成
+
+```text
+core/        IR・診断などの Minecraft 非依存部分（現状は対象バージョンと doctor）
+cli/         modbridge コマンド
+fixtures/    検証用 fixture MOD（独立ビルド）
+scripts/     スパイク・検証用スクリプト
+docs/adr/    設計判断の記録
+```
+
+## ライセンス
+
+未決定です。候補は MIT で、上流のライセンス確認結果は [ADR-0001](docs/adr/0001-architecture-and-toolchain.md) にまとめています。決定するまでは、このリポジトリのコードを再配布しないでください。
+
+Minecraft は Mojang Studios の商標です。このプロジェクトは Mojang Studios および Microsoft の公式製品ではなく、承認も受けていません。

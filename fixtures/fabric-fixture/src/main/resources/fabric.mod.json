@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "pmb_fixture",
+	"version": "${version}",
+	"name": "PuiModBridge Fixture",
+	"description": "互換エンジン検証用の自作 fixture。非バニラのアイテムとブロックを1種ずつ登録する。",
+	"authors": ["Pui-core"],
+	"license": "LicenseRef-Undecided",
+	"environment": "*",
+	"entrypoints": {
+		"main": ["dev.puicore.modbridge.fixture.FixtureMod"]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

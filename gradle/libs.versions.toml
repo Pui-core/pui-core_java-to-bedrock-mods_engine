@@ -1,0 +1,17 @@
+# 対象バージョンの単一の正本。変更時は docs/adr/0002 の検証記録も更新する。
+[versions]
+java = "25"
+junit = "5.13.4"
+
+# 上流（Mode A スパイク対象）。2026-11-27 に上流の公開情報で確認した値。
+minecraft = "26.3"
+fabric-loader = "0.20.1"
+fabric-api = "0.166.2+26.3"
+fabric-loom = "1.19.4"
+geyser = "2.12.1-b1312"
+hydraulic = "1.0.0-b132"
+
+[libraries]
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }

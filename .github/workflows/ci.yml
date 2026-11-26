@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }}, JDK ${{ matrix.java }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        java: ['25']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build --no-daemon
+        shell: bash
+      - run: ./gradlew :cli:run --args=doctor --no-daemon -q
+        shell: bash
+
+  fixture:
+    name: fixture MOD (Fabric MC 26.3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: バージョンカタログと fixture の版を照合
+        run: |
+          set -eu
+          cat_val() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" gradle/libs.versions.toml; }
+          fx_val() { sed -n "s/^$1=//p" fixtures/fabric-fixture/gradle.properties; }
+          fail=0
+          for pair in minecraft:minecraft_version fabric-loader:loader_version fabric-api:fabric_api_version fabric-loom:loom_version; do
+            c="$(cat_val "${pair%%:*}")"; f="$(fx_val "${pair##*:}")"
+            if [ "$c" != "$f" ]; then echo "不一致: ${pair%%:*} catalog=$c fixture=$f"; fail=1; fi
+          done
+          exit $fail
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build --no-daemon
+        working-directory: fixtures/fabric-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pmb-fabric-fixture
+          path: fixtures/fabric-fixture/build/libs/*.jar
+          retention-days: 14

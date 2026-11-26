@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "pmb_fixture:block/test_block" }
+  }
+}

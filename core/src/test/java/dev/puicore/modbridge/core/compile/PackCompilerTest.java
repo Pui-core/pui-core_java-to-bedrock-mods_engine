@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -18,10 +19,15 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -208,6 +214,78 @@ class PackCompilerTest {
         assertNull(PackPublisher.readCache(cache, "0".repeat(64)));
         Files.write(cache.resolve(key).resolve(PackCompiler.PACK_FILE), new byte[] {1, 2, 3});
         assertNull(PackPublisher.readCache(cache, key), "チェックサムが合わないキャッシュは使わない");
+    }
+
+    @Test
+    void 同じ鍵のキャッシュへ並行で保存しても完全な成果物が残る() throws Exception {
+        Path input = jar("f.jar", fixture("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(input));
+        String key = PackPublisher.cacheKey(ir, PackCompiler.Settings.DEFAULT);
+        PackCompiler.Result original = PackCompiler.compile(ir, Map.of("f.jar", input), PackCompiler.Settings.DEFAULT);
+        assertTrue(original.ok());
+        Path cache = dir.resolve("shared-cache");
+        PackPublisher.writeCache(cache, key, original.outputs());
+
+        int writers = 8;
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(writers + 1)) {
+            List<Future<Void>> tasks = new ArrayList<>();
+            for (int worker = 0; worker < writers; worker++) {
+                tasks.add(executor.submit(() -> {
+                    start.await();
+                    for (int write = 0; write < 3; write++) {
+                        PackPublisher.writeCache(cache, key, original.outputs());
+                    }
+                    return null;
+                }));
+            }
+            var reader = executor.submit(() -> {
+                start.await();
+                for (int read = 0; read < 24; read++) {
+                    var result = PackPublisher.readCachedResult(cache, key);
+                    if (result != null) {
+                        assertArrayEquals(original.outputs().get(PackCompiler.ADDON_FILE),
+                                result.outputs().get(PackCompiler.ADDON_FILE));
+                    }
+                }
+                return null;
+            });
+            start.countDown();
+            for (Future<Void> task : tasks) {
+                task.get(15, TimeUnit.SECONDS);
+            }
+            reader.get(15, TimeUnit.SECONDS);
+        }
+
+        var restored = PackPublisher.readCachedResult(cache, key);
+        assertNotNull(restored);
+        assertEquals(original.diagnostics(), restored.diagnostics());
+        for (String file : PackCompiler.OUTPUT_FILES) {
+            assertArrayEquals(original.outputs().get(file), restored.outputs().get(file), file);
+        }
+        try (var paths = Files.list(cache)) {
+            assertFalse(paths.anyMatch(p -> p.getFileName().toString().startsWith("." + key + ".tmp")
+                    || p.getFileName().toString().contains(".old-")));
+        }
+    }
+
+    @Test
+    void 新しいフォルダーの移動に失敗すると既存のキャッシュを復元する() throws IOException {
+        Path input = jar("f.jar", fixture("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(input));
+        String key = PackPublisher.cacheKey(ir, PackCompiler.Settings.DEFAULT);
+        PackCompiler.Result original = PackCompiler.compile(ir, Map.of("f.jar", input), PackCompiler.Settings.DEFAULT);
+        assertTrue(original.ok());
+        Path cache = dir.resolve("cache");
+        PackPublisher.writeCache(cache, key, original.outputs());
+
+        assertThrows(IOException.class, () -> PackPublisher.replaceDirectory(cache.resolve("missing"), cache.resolve(key)));
+
+        var restored = PackPublisher.readCachedResult(cache, key);
+        assertNotNull(restored);
+        for (String file : PackCompiler.OUTPUT_FILES) {
+            assertArrayEquals(original.outputs().get(file), restored.outputs().get(file), file);
+        }
     }
 
     @Test

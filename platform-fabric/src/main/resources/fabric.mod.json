@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "modbridge_registry_dump",
+	"version": "${version}",
+	"name": "PuiModBridge Registry Dump",
+	"description": "サーバー起動後に、MOD が登録したアイテム・ブロック・レシピを JSON に書き出す。JVM 引数 -Dmodbridge.registryDump=<file> を付けたときだけ動く。",
+	"authors": ["Pui-core"],
+	"license": "LicenseRef-Undecided",
+	"environment": "server",
+	"entrypoints": {
+		"server": ["dev.puicore.modbridge.platform.fabric.RegistryDump"]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-lifecycle-events-v1": "*"
+	}
+}

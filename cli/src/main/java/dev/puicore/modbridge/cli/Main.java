@@ -72,6 +72,7 @@ public final class Main {
     private static int scan(List<String> args, PrintStream out, PrintStream err, boolean writeIr) {
         List<Path> inputs = new ArrayList<>();
         Path outFile = null;
+        Path runtime = null;
         boolean onlyFiles = false;
         try {
             for (int i = 0; i < args.size(); i++) {
@@ -88,6 +89,16 @@ public final class Main {
                         return USAGE;
                     }
                     outFile = Path.of(args.get(++i));
+                } else if (!onlyFiles && a.equals("--runtime")) {
+                    if (i + 1 >= args.size()) {
+                        err.println("--runtime には実行時レジストリのファイル名が必要");
+                        return USAGE;
+                    }
+                    if (runtime != null) {
+                        err.println("--runtime は 1 回だけ指定する");
+                        return USAGE;
+                    }
+                    runtime = Path.of(args.get(++i));
                 } else if (!onlyFiles && a.startsWith("-")) {
                     err.println("不明なオプション: " + a);
                     return USAGE;
@@ -103,7 +114,7 @@ public final class Main {
             err.println("JAR ファイルか、JAR を含むフォルダーを 1 つ以上指定する");
             return USAGE;
         }
-        BridgeIr ir = Analyzer.analyzePaths(inputs);
+        BridgeIr ir = Analyzer.analyzePaths(inputs, runtime);
         if (writeIr) {
             String json = IrJson.write(ir);
             if (outFile == null) {
@@ -151,8 +162,8 @@ public final class Main {
         ir.mods().forEach(m -> out.println("- " + m.id() + " " + m.version() + "（" + m.loader() + "、依存 " + m.depends().keySet() + "）"));
         out.println();
         Map<String, Long> kinds = new TreeMap<>();
-        ir.definitions().forEach(d -> kinds.merge(d.kind().name(), 1L, Long::sum));
-        out.println("## 定義（静的解析で推定）");
+        ir.definitions().forEach(d -> kinds.merge(d.kind().name() + "（" + sourceLabel(d) + "）", 1L, Long::sum));
+        out.println("## 定義");
         kinds.forEach((k, n) -> out.println("- " + k + ": " + n));
         out.println();
         out.println("## 方式と検証状態");
@@ -198,6 +209,14 @@ public final class Main {
         }
     }
 
+    private static String sourceLabel(BridgeIr.Definition d) {
+        boolean runtime = "registered".equals(d.attributes().get("runtime"));
+        return switch (d.source()) {
+            case RUNTIME_REGISTRY -> "実行時のみ";
+            case STATIC_ASSET -> runtime ? "静的・実行時の両方" : "静的解析のみ";
+        };
+    }
+
     private static String abbreviate(String sha) {
         return sha.length() > 12 ? sha.substring(0, 12) + "…" : (sha.isEmpty() ? "-" : sha);
     }
@@ -215,8 +234,11 @@ public final class Main {
                 使い方: modbridge <command>
                   doctor                          実行環境と対象バージョンを点検する
                   version                         対象バージョンを表示する
-                  scan <jar|dir>... [--out FILE]  JAR を静的に解析し、Bridge IR（JSON）を出力する
-                  validate <jar|dir>...           解析して診断だけを表示する
+                  scan <jar|dir>... [--runtime FILE] [--out FILE]
+                                                  JAR を静的に解析し、Bridge IR（JSON）を出力する。
+                                                  --runtime で実行時レジストリ（platform-fabric の出力）と突き合わせる
+                  validate <jar|dir>... [--runtime FILE]
+                                                  解析して診断だけを表示する
                   report <ir.json>                IR から互換性レポートを表示する
                   （-- の後ろは「-」で始まる名前もファイルとして扱う）
                 終了コード: 0=成功, 1=ERROR 診断あり（読めない JAR を含む）・不正な IR,

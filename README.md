@@ -32,20 +32,31 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 ```sh
 modbridge validate mods/                       # フォルダー直下の *.jar（大文字の .JAR も含む）をまとめて診断
 modbridge scan mods/ --out build/ir.json       # Bridge IR（JSON）を書き出す
+modbridge scan mods/ --runtime registry-dump.json --out build/ir.json  # 実行時レジストリと突き合わせる
 modbridge report build/ir.json                 # 方式と検証状態の一覧を表示
 ```
 
-JAR は展開せず、コードも実行しません（静的解析）。IR の形式と診断コードの一覧は [ADR-0003](docs/adr/0003-bridge-ir-and-static-scan.md) にあります。計画上の状態は、実機で検証されるまですべて `UNTESTED` です。
+JAR は展開せず、コードも実行しません（静的解析）。コードでだけ登録される定義は、`--runtime` に実行時レジストリ（下の「実行時レジストリの取得」）を渡すと見つけられます。IR の形式と診断コードの一覧は [ADR-0003](docs/adr/0003-bridge-ir-and-static-scan.md) にあります。計画上の状態は、実機で検証されるまですべて `UNTESTED` です。
 
 `modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり（読めない JAR、JAR が 1 つも無い場合を含む）または不正な IR、`2`=使い方の誤り、`3`=IR の書き出しと IR ファイルの読込の失敗です。
 
 ## fixture MOD
 
-`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot` と独自ブロック `pmb_fixture:test_block` を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
+`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
 
 ```sh
-cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.1.jar
+cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.2.jar
 ```
+
+## 実行時レジストリの取得（Mode A）
+
+`platform-fabric` は、Fabric 専用サーバー上で MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出す MOD です。JVM 引数 `-Dmodbridge.registryDump=<file>` を付けたときだけ動きます（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
+
+```sh
+cd platform-fabric && ./gradlew build          # build/libs/modbridge-registry-dump-0.1.0.jar
+```
+
+ビルド済みなら、接続スパイクのスクリプトが自動で組み込み、`local/spike-server/registry-dump.json` に書き出します。
 
 ## 接続スパイク（Mode A）
 

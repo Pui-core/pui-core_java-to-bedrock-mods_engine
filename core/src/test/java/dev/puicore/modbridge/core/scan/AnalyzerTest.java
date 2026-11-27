@@ -13,8 +13,8 @@ import dev.puicore.modbridge.core.ir.BridgeIr.Mode;
 import dev.puicore.modbridge.core.ir.BridgeIr.Severity;
 import dev.puicore.modbridge.core.ir.BridgeIr.Status;
 import dev.puicore.modbridge.core.ir.IrJson;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,17 +34,25 @@ class AnalyzerTest {
     // ---- テスト用 JAR の組み立て ----
 
     private Path jar(String name, Map<String, String> entries) throws IOException {
+        Map<String, byte[]> bytes = new LinkedHashMap<>();
+        entries.forEach((k, v) -> bytes.put(k, v.getBytes(StandardCharsets.UTF_8)));
         Path p = dir.resolve(name);
-        try (OutputStream os = Files.newOutputStream(p); ZipOutputStream zip = new ZipOutputStream(os)) {
+        Files.write(p, zip(bytes));
+        return p;
+    }
+
+    private static byte[] zip(Map<String, byte[]> entries) throws IOException {
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(os)) {
             for (var e : entries.entrySet()) {
                 ZipEntry ze = new ZipEntry(e.getKey());
                 ze.setTime(0);
                 zip.putNextEntry(ze);
-                zip.write(e.getValue().getBytes(StandardCharsets.UTF_8));
+                zip.write(e.getValue());
                 zip.closeEntry();
             }
         }
-        return p;
+        return os.toByteArray();
     }
 
     private static String modJson(String id, String depends) {
@@ -143,7 +151,8 @@ class AnalyzerTest {
     @Test
     void ZIP爆弾を読込上限で止める() throws IOException {
         Map<String, String> m = fixtureEntries("bomb");
-        m.put("assets/bomb/lang/zz_zz.json", "0".repeat(3 << 20)); // 3 MiB の同一文字（圧縮率は数百倍）
+        // 3 MiB の同一文字。個別・合計の上限より小さいので、圧縮率（200 倍）の判定で止まる
+        m.put("assets/bomb/lang/zz_zz.json", "0".repeat(3 << 20));
         BridgeIr ir = Analyzer.analyzePaths(List.of(jar("bomb.jar", m)));
         assertEquals(1, codes(ir, "JAR_LIMIT_EXCEEDED").size(), ir.diagnostics().toString());
 
@@ -184,9 +193,10 @@ class AnalyzerTest {
         var missing = codes(ir, "DEPENDENCY_MISSING");
         assertEquals(1, missing.size());
         assertTrue(missing.get(0).message().contains("fabric-api"));
-        // 依存が欠けた MOD（mod_b）は fail closed。依存を満たす mod_a は計画上 UNTESTED のまま
+        // 依存が欠けた MOD（mod_b）は fail closed。mod_b に依存する mod_a にも伝わる
         assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:mod_b")).allMatch(p -> p.status() == Status.ERROR));
-        assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:mod_a")).allMatch(p -> p.status() == Status.UNTESTED));
+        assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:mod_a"))
+                .allMatch(p -> p.status() == Status.ERROR && p.reason().contains("依存先 mod_b")), ir.plans().toString());
         var cycle = codes(ir, "DEPENDENCY_CYCLE");
         assertEquals(1, cycle.size());
         assertEquals("依存が循環している: mod_a -> mod_b -> mod_a", cycle.get(0).message());
@@ -228,6 +238,103 @@ class AnalyzerTest {
     void 壊れたfabric_mod_jsonはエラー() throws IOException {
         BridgeIr ir = Analyzer.analyzePaths(List.of(jar("bad.jar", Map.of("fabric.mod.json", "{ not json"))));
         assertEquals(Severity.ERROR, codes(ir, "INVALID_JSON").get(0).severity());
+    }
+
+    @Test
+    void オブジェクトでないfabric_mod_jsonと空ファイルはエラー() throws IOException {
+        for (String body : List.of("[]", "", "\"x\"", "null")) {
+            BridgeIr ir = Analyzer.analyzePaths(List.of(jar("bad.jar", Map.of("fabric.mod.json", body))));
+            assertTrue(hasErrors(ir), "'" + body + "' " + ir.diagnostics());
+            assertTrue(ir.mods().isEmpty());
+        }
+    }
+
+    @Test
+    void fabric_mod_jsonの型違いは例外ではなくエラー診断になり_他のJARの解析は続ける() throws IOException {
+        List<String> bodies = List.of(
+                "{\"id\":\"t1\",\"entrypoints\":{\"main\":[null]}}",
+                "{\"id\":\"t2\",\"depends\":{\"a\":[{\"x\":1}]}}",
+                "{\"id\":\"t3\",\"mixins\":[[1,2]]}",
+                "{\"id\":\"t4\",\"entrypoints\":{\"main\":[[\"x\"]]}}",
+                "{\"id\":\"t5\",\"entrypoints\":{\"main\":[{\"adapter\":\"kotlin\"}]}}",
+                "{\"id\":\"t6\",\"provides\":\"alias\"}",
+                "{\"id\":\"t7\",\"jars\":[1]}",
+                "{\"id\":\"t8\",\"version\":3}");
+        for (int i = 0; i < bodies.size(); i++) {
+            String id = "t" + (i + 1);
+            BridgeIr ir = Analyzer.analyzePaths(List.of(jar(id + ".jar", Map.of("fabric.mod.json", bodies.get(i))),
+                    jar("ok.jar", fixtureEntries("ok_mod"))));
+            var bad = codes(ir, "INVALID_MOD_METADATA");
+            assertEquals(1, bad.size(), bodies.get(i) + " " + ir.diagnostics());
+            assertEquals(id, bad.get(0).subject());
+            assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:" + id)).allMatch(p -> p.status() == Status.ERROR));
+            assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:ok_mod")).allMatch(p -> p.status() == Status.UNTESTED));
+        }
+    }
+
+    @Test
+    void JARが1つも無ければエラー() throws IOException {
+        Path empty = Files.createDirectories(dir.resolve("empty"));
+        Files.writeString(empty.resolve("readme.txt"), "x");
+        BridgeIr ir = Analyzer.analyzePaths(List.of(empty));
+        assertEquals(1, codes(ir, "NO_INPUT").size());
+        assertTrue(hasErrors(ir));
+    }
+
+    @Test
+    void 拡張子が大文字のJARも読む() throws IOException {
+        Path sub = Files.createDirectories(dir.resolve("upper"));
+        Files.move(jar("UP.JAR", fixtureEntries("upper_mod")), sub.resolve("UP.JAR"));
+        assertEquals(1, Analyzer.analyzePaths(List.of(sub)).mods().size());
+    }
+
+    @Test
+    void 別フォルダーの同名JARはエラー() throws IOException {
+        Path a = Files.createDirectories(dir.resolve("a"));
+        Path b = Files.createDirectories(dir.resolve("b"));
+        Files.move(jar("x.jar", fixtureEntries("mod_x")), a.resolve("x.jar"));
+        Files.move(jar("x.jar", fixtureEntries("mod_y")), b.resolve("x.jar"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(a, b));
+        assertEquals(1, codes(ir, "DUPLICATE_INPUT_NAME").size());
+        assertEquals(IrJson.write(ir), IrJson.write(Analyzer.analyzePaths(List.of(b, a))));
+    }
+
+    @Test
+    void 同梱JARのMOD_IDで依存を満たせる() throws IOException {
+        byte[] inner = zip(Map.of("fabric.mod.json",
+                "{\"id\":\"inner_mod\",\"version\":\"1\",\"provides\":[\"inner_alias\"]}".getBytes(StandardCharsets.UTF_8)));
+        Map<String, byte[]> outer = new LinkedHashMap<>();
+        outer.put("fabric.mod.json", modJson("outer", "\"inner_mod\":\"*\",\"inner_alias\":\"*\"").replace("}}",
+                "},\"jars\":[{\"file\":\"META-INF/jars/inner.jar\"},{\"file\":\"META-INF/jars/missing.jar\"}]}")
+                .getBytes(StandardCharsets.UTF_8));
+        outer.put("META-INF/jars/inner.jar", inner);
+        Path p = dir.resolve("outer.jar");
+        Files.write(p, zip(outer));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(p));
+        assertTrue(codes(ir, "DEPENDENCY_MISSING").isEmpty(), ir.diagnostics().toString());
+        assertEquals(List.of("inner_alias", "inner_mod"), ir.mods().get(0).nestedMods());
+        assertEquals(1, codes(ir, "NESTED_JAR_UNREADABLE").size(), "jars に書かれているのに無い同梱 JAR は警告");
+    }
+
+    @Test
+    void 診断に絶対パスを入れない() throws IOException {
+        Path broken = dir.resolve("broken.jar");
+        Files.write(broken, new byte[] {'P', 'K', 3, 4, 0, 0});
+        String json = IrJson.write(Analyzer.analyzePaths(List.of(broken, dir.resolve("missing.jar"))));
+        assertFalse(json.contains(dir.toString()), json);
+        assertFalse(json.contains(dir.toString().replace('\\', '/')), json);
+    }
+
+    @Test
+    void 不正なIRは例外の種類によらずIllegalArgumentExceptionで拒否する() throws IOException {
+        String good = IrJson.write(Analyzer.analyzePaths(List.of(jar("fixture.jar", fixtureEntries("pmb_fixture")))));
+        for (String bad : List.of("[]", "1", "{\"schema\":[1]}", "{\"schema\":\"modbridge.bridge-ir\"}",
+                "{\"schema\":\"modbridge.bridge-ir\",\"schemaVersion\":\"x\"}",
+                good.replaceFirst("\"inputs\": \\[", "\"inputs\": 5, \"_\": ["),
+                good.replace("\"status\": \"UNTESTED\"", "\"status\": \"SUPPORTED\""),
+                good.replace("\"kind\": \"ITEM\"", "\"kind\": \"NOPE\""))) {
+            assertThrows(IllegalArgumentException.class, () -> IrJson.read(bad), bad.length() > 80 ? bad.substring(0, 80) : bad);
+        }
     }
 
     @Test

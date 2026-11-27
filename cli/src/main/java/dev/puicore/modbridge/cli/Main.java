@@ -13,6 +13,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -24,7 +25,8 @@ import java.util.TreeMap;
 /**
  * modbridge CLI。
  *
- * <p>終了コード: 0=成功（ERROR 診断なし）, 1=ERROR 診断あり・診断失敗, 2=使い方の誤り, 3=入出力の失敗。
+ * <p>終了コード: 0=成功（ERROR 診断なし）, 1=ERROR 診断あり（入力 JAR が読めない場合も、診断 IO_ERROR としてここに含む）・
+ * 不正な IR, 2=使い方の誤り, 3=IR の書き出しと IR ファイルの読込の失敗。
  */
 public final class Main {
     static final int OK = 0;
@@ -70,20 +72,32 @@ public final class Main {
     private static int scan(List<String> args, PrintStream out, PrintStream err, boolean writeIr) {
         List<Path> inputs = new ArrayList<>();
         Path outFile = null;
-        for (int i = 0; i < args.size(); i++) {
-            String a = args.get(i);
-            if (writeIr && (a.equals("--out") || a.equals("-o"))) {
-                if (i + 1 >= args.size()) {
-                    err.println("--out にはファイル名が必要");
+        boolean onlyFiles = false;
+        try {
+            for (int i = 0; i < args.size(); i++) {
+                String a = args.get(i);
+                if (!onlyFiles && a.equals("--")) {
+                    onlyFiles = true; // 以降は「-」で始まる名前もファイルとして扱う
+                } else if (!onlyFiles && writeIr && (a.equals("--out") || a.equals("-o"))) {
+                    if (i + 1 >= args.size()) {
+                        err.println("--out にはファイル名が必要");
+                        return USAGE;
+                    }
+                    if (outFile != null) {
+                        err.println("--out は 1 回だけ指定する");
+                        return USAGE;
+                    }
+                    outFile = Path.of(args.get(++i));
+                } else if (!onlyFiles && a.startsWith("-")) {
+                    err.println("不明なオプション: " + a);
                     return USAGE;
+                } else {
+                    inputs.add(Path.of(a));
                 }
-                outFile = Path.of(args.get(++i));
-            } else if (a.startsWith("-")) {
-                err.println("不明なオプション: " + a);
-                return USAGE;
-            } else {
-                inputs.add(Path.of(a));
             }
+        } catch (InvalidPathException e) {
+            err.println("パスとして使えない: " + e.getInput());
+            return USAGE;
         }
         if (inputs.isEmpty()) {
             err.println("JAR ファイルか、JAR を含むフォルダーを 1 つ以上指定する");
@@ -118,6 +132,9 @@ public final class Main {
         BridgeIr ir;
         try {
             ir = IrJson.read(Files.readString(Path.of(args.get(0)), StandardCharsets.UTF_8));
+        } catch (InvalidPathException e) {
+            err.println("パスとして使えない: " + e.getInput());
+            return USAGE;
         } catch (IOException e) {
             err.println("読めない: " + args.get(0) + " (" + e.getMessage() + ")");
             return IO;
@@ -201,7 +218,9 @@ public final class Main {
                   scan <jar|dir>... [--out FILE]  JAR を静的に解析し、Bridge IR（JSON）を出力する
                   validate <jar|dir>...           解析して診断だけを表示する
                   report <ir.json>                IR から互換性レポートを表示する
-                終了コード: 0=成功, 1=ERROR 診断あり, 2=使い方の誤り, 3=入出力の失敗
+                  （-- の後ろは「-」で始まる名前もファイルとして扱う）
+                終了コード: 0=成功, 1=ERROR 診断あり（読めない JAR を含む）・不正な IR,
+                          2=使い方の誤り, 3=IR の書き出し・IR ファイルの読込の失敗
                 （compile は v0.2.0 以降で追加予定）""");
     }
 }

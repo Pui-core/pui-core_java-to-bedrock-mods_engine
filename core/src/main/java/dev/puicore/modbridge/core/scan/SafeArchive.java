@@ -1,5 +1,6 @@
 package dev.puicore.modbridge.core.scan;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -17,6 +19,7 @@ import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /**
  * JAR（ZIP）を展開せずに読む。クラスの読込もコード実行もしない。
@@ -26,6 +29,9 @@ import java.util.zip.ZipFile;
  *   <li>エントリー数・個別サイズ・合計読込量・圧縮率に上限を設ける（ZIP 爆弾対策）。
  *       上限は宣言サイズではなく、実際に読んだバイト数で判定する</li>
  *   <li>内容を読むのはテキスト系（JSON・lang・toml・mcmeta）だけ。画像などは存在だけを記録する</li>
+ *   <li>同梱 JAR（{@code *.jar} エントリー）は、中の {@code fabric.mod.json} だけを読む（依存の判定用）。
+ *       同梱 JAR の中にさらに同梱された JAR は読まない</li>
+ *   <li>エラーメッセージには絶対パスを入れない（IR の再現性のため）</li>
  * </ul>
  */
 public final class SafeArchive {
@@ -56,6 +62,9 @@ public final class SafeArchive {
     }
 
     private static final Pattern DRIVE = Pattern.compile("^[A-Za-z]:.*");
+    /** 同梱 JAR の読込結果。{@code fabricModJson} は無ければ null、{@code error} は読めなかった理由（読めたら null）。 */
+    public record NestedJar(byte[] fabricModJson, String error) {}
+
     private static final Set<String> TEXT_SUFFIXES = Set.of(".json", ".lang", ".toml", ".mcmeta", ".properties");
 
     private final String fileName;
@@ -63,13 +72,16 @@ public final class SafeArchive {
     private final long size;
     private final Set<String> names;
     private final Map<String, byte[]> texts;
+    private final Map<String, NestedJar> nested;
 
-    private SafeArchive(String fileName, String sha256, long size, Set<String> names, Map<String, byte[]> texts) {
+    private SafeArchive(String fileName, String sha256, long size, Set<String> names, Map<String, byte[]> texts,
+            Map<String, NestedJar> nested) {
         this.fileName = fileName;
         this.sha256 = sha256;
         this.size = size;
         this.names = names;
         this.texts = texts;
+        this.nested = nested;
     }
 
     public String fileName() {
@@ -98,6 +110,11 @@ public final class SafeArchive {
         return texts.get(name);
     }
 
+    /** 同梱 JAR の読込結果。エントリーが無ければ null。 */
+    public NestedJar nested(String name) {
+        return nested.get(name);
+    }
+
     public static SafeArchive open(Path path) throws ArchiveException {
         return open(path, Limits.DEFAULT);
     }
@@ -112,11 +129,12 @@ public final class SafeArchive {
             }
             sha = sha256(path);
         } catch (IOException e) {
-            throw new ArchiveException("IO_ERROR", "読めない: " + e.getMessage(), e);
+            throw new ArchiveException("IO_ERROR", "読めない（" + e.getClass().getSimpleName() + "）", e);
         }
 
         Set<String> names = new TreeSet<>();
         Map<String, byte[]> texts = new TreeMap<>();
+        Map<String, NestedJar> nested = new TreeMap<>();
         long totalRead = 0;
         try (ZipFile zip = new ZipFile(path.toFile())) {
             if (zip.size() > limits.maxEntries()) {
@@ -137,10 +155,21 @@ public final class SafeArchive {
                 if (!names.add(name)) {
                     throw new ArchiveException("JAR_CORRUPT", "同名のエントリーが重複している: " + name);
                 }
+                if (name.toLowerCase(Locale.ROOT).endsWith(".jar")) {
+                    NestedJar n = readNested(zip, e, limits);
+                    if (n.fabricModJson() != null) {
+                        totalRead += n.fabricModJson().length;
+                    }
+                    nested.put(name, n);
+                    continue;
+                }
                 if (!isText(name)) {
                     continue;
                 }
-                byte[] data = readBounded(zip, e, limits);
+                byte[] data;
+                try (InputStream in = zip.getInputStream(e)) {
+                    data = readBounded(in, name, Math.max(e.getCompressedSize(), 1), limits);
+                }
                 totalRead += data.length;
                 if (totalRead > limits.maxTotalReadBytes()) {
                     throw new ArchiveException("JAR_LIMIT_EXCEEDED", "読込量の合計が上限を超えた（" + limits.maxTotalReadBytes() + " バイト）");
@@ -151,10 +180,69 @@ public final class SafeArchive {
             throw e;
         } catch (IOException | IllegalArgumentException e) {
             // ZipException（壊れた ZIP）や不正なエントリー名の文字コード
-            throw new ArchiveException("JAR_CORRUPT", "JAR として読めない: " + e.getMessage(), e);
+            throw new ArchiveException("JAR_CORRUPT", "JAR として読めない: " + scrub(e.getMessage(), path), e);
         }
         return new SafeArchive(path.getFileName().toString(), sha, size,
-                Collections.unmodifiableSet(names), Collections.unmodifiableMap(texts));
+                Collections.unmodifiableSet(names), Collections.unmodifiableMap(texts), Collections.unmodifiableMap(nested));
+    }
+
+    /**
+     * 同梱 JAR をストリームとして読み、{@code fabric.mod.json} だけを取り出す。
+     * 読めなくても JAR 全体は拒否しない（依存の判定ができないだけなので、理由を記録する）。
+     * 展開量は「圧縮サイズ × 圧縮率の上限 + 1 MiB」と JAR サイズの上限の小さいほうで打ち切る。
+     */
+    private static NestedJar readNested(ZipFile zip, ZipEntry e, Limits limits) {
+        long cap = Math.min(limits.maxJarBytes(), Math.max(e.getCompressedSize(), 1) * limits.maxRatio() + (1L << 20));
+        try (InputStream raw = zip.getInputStream(e); ZipInputStream in = new ZipInputStream(new CappedInputStream(raw, cap))) {
+            ZipEntry inner;
+            while ((inner = in.getNextEntry()) != null) {
+                if (inner.getName().equals("fabric.mod.json")) {
+                    return new NestedJar(readBounded(in, e.getName() + "!fabric.mod.json", 0, limits), null);
+                }
+            }
+            return new NestedJar(null, null);
+        } catch (ArchiveException ex) {
+            return new NestedJar(null, ex.getMessage());
+        } catch (IOException | IllegalArgumentException ex) {
+            return new NestedJar(null, "同梱 JAR として読めない（" + ex.getClass().getSimpleName() + "）");
+        }
+    }
+
+    /** 読んだバイト数が上限を超えたら打ち切る入力。 */
+    private static final class CappedInputStream extends FilterInputStream {
+        private long remaining;
+
+        CappedInputStream(InputStream in, long cap) {
+            super(in);
+            this.remaining = cap;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] one = new byte[1];
+            return read(one, 0, 1) < 0 ? -1 : one[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int n = super.read(b, off, len);
+            if (n > 0) {
+                remaining -= n;
+                if (remaining < 0) {
+                    throw new IOException("展開量が上限を超えた（ZIP 爆弾の疑い）");
+                }
+            }
+            return n;
+        }
+    }
+
+    /** 例外メッセージに含まれるパスをファイル名に置き換える。 */
+    private static String scrub(String message, Path path) {
+        if (message == null) {
+            return "";
+        }
+        String name = String.valueOf(path.getFileName());
+        return message.replace(path.toAbsolutePath().toString(), name).replace(path.toString(), name);
     }
 
     static void checkName(String name) throws ArchiveException {
@@ -174,25 +262,26 @@ public final class SafeArchive {
         return dot >= 0 && TEXT_SUFFIXES.contains(name.substring(dot));
     }
 
-    private static byte[] readBounded(ZipFile zip, ZipEntry e, Limits limits) throws IOException, ArchiveException {
-        long compressed = Math.max(e.getCompressedSize(), 1);
+    /**
+     * 上限つきで読む。{@code compressed} が 0 以下なら圧縮率は判定しない（同梱 JAR の中など、
+     * 外側の展開量の上限で守られている場合）。{@code in} は閉じない。
+     */
+    private static byte[] readBounded(InputStream in, String name, long compressed, Limits limits) throws IOException, ArchiveException {
         List<byte[]> chunks = new ArrayList<>();
         long read = 0;
-        try (InputStream in = zip.getInputStream(e)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                read += n;
-                if (read > limits.maxEntryBytes()) {
-                    throw new ArchiveException("JAR_LIMIT_EXCEEDED", "エントリーが大きすぎる: " + e.getName());
-                }
-                if (read > (1L << 20) && read / compressed > limits.maxRatio()) {
-                    throw new ArchiveException("JAR_LIMIT_EXCEEDED", "圧縮率が異常に高い（ZIP 爆弾の疑い）: " + e.getName());
-                }
-                byte[] c = new byte[n];
-                System.arraycopy(buf, 0, c, 0, n);
-                chunks.add(c);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            read += n;
+            if (read > limits.maxEntryBytes()) {
+                throw new ArchiveException("JAR_LIMIT_EXCEEDED", "エントリーが大きすぎる: " + name);
             }
+            if (compressed > 0 && read > (1L << 20) && read / compressed > limits.maxRatio()) {
+                throw new ArchiveException("JAR_LIMIT_EXCEEDED", "圧縮率が異常に高い（ZIP 爆弾の疑い）: " + name);
+            }
+            byte[] c = new byte[n];
+            System.arraycopy(buf, 0, c, 0, n);
+            chunks.add(c);
         }
         byte[] out = new byte[(int) read];
         int pos = 0;

@@ -13,6 +13,7 @@ import dev.puicore.modbridge.core.ir.BridgeIr.ModDescriptor;
 import dev.puicore.modbridge.core.ir.BridgeIr.Severity;
 import dev.puicore.modbridge.core.ir.BridgeIr.Status;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -22,6 +23,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -36,35 +38,64 @@ public final class Analyzer {
 
     private Analyzer() {}
 
-    /** ファイルとディレクトリ（直下の *.jar）を受け取り、IR を作る。 */
+    /** 1 回に解析する JAR の上限。 */
+    static final int MAX_INPUTS = 4096;
+
+    /**
+     * ファイルとディレクトリ（直下の *.jar。拡張子の大文字・小文字は区別しない）を受け取り、IR を作る。
+     * 1 つの JAR で想定外の例外が起きても、その JAR を INTERNAL_ERROR にして残りの解析を続ける。
+     */
     public static BridgeIr analyzePaths(List<Path> paths) {
         List<Path> jars = new ArrayList<>();
         List<Diagnostic> diags = new ArrayList<>();
         for (Path p : paths) {
+            String label = String.valueOf(p.getFileName());
             if (Files.isDirectory(p)) {
                 try (Stream<Path> s = Files.list(p)) {
-                    s.filter(f -> f.getFileName().toString().endsWith(".jar") && Files.isRegularFile(f)).forEach(jars::add);
-                } catch (IOException e) {
-                    diags.add(new Diagnostic(Severity.ERROR, "IO_ERROR", p.getFileName().toString(), "フォルダーを読めない: " + e.getMessage()));
+                    s.filter(f -> f.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar") && Files.isRegularFile(f))
+                            .forEach(jars::add);
+                } catch (IOException | UncheckedIOException e) {
+                    diags.add(new Diagnostic(Severity.ERROR, "IO_ERROR", label, "フォルダーを読めない（" + e.getClass().getSimpleName() + "）"));
                 }
             } else if (Files.isRegularFile(p)) {
                 jars.add(p);
             } else {
-                diags.add(new Diagnostic(Severity.ERROR, "IO_ERROR", String.valueOf(p.getFileName()), "ファイルが無い"));
+                diags.add(new Diagnostic(Severity.ERROR, "IO_ERROR", label, "ファイルが無い"));
             }
         }
-        jars.sort(Comparator.comparing(f -> f.getFileName().toString()));
+        if (jars.isEmpty() && diags.isEmpty()) {
+            diags.add(new Diagnostic(Severity.ERROR, "NO_INPUT", "-", "解析する JAR が 1 つも無い（フォルダーの指定を確認する）"));
+        }
+        if (jars.size() > MAX_INPUTS) {
+            diags.add(new Diagnostic(Severity.ERROR, "INPUT_LIMIT_EXCEEDED", "-", "JAR が多すぎる（" + jars.size() + " 個、上限 " + MAX_INPUTS + "）"));
+            return analyze(List.of(), List.of(), diags);
+        }
+        // 並びはファイル名 → 絶対パス（出力には入れない。同名ファイルの処理順を固定するためだけに使う）
+        jars.sort(Comparator.comparing((Path f) -> f.getFileName().toString()).thenComparing(f -> f.toAbsolutePath().toString()));
+        Map<String, Integer> nameCount = new TreeMap<>();
+        jars.forEach(f -> nameCount.merge(f.getFileName().toString(), 1, Integer::sum));
+        nameCount.forEach((name, n) -> {
+            if (n > 1) {
+                diags.add(new Diagnostic(Severity.ERROR, "DUPLICATE_INPUT_NAME", name, "同じファイル名の JAR が " + n + " 個ある（IR の上で区別できない）"));
+            }
+        });
+
         List<JarScanner.JarScan> scans = new ArrayList<>();
         List<InputFile> inputs = new ArrayList<>();
         for (Path jar : jars) {
+            String name = jar.getFileName().toString();
+            InputFile input = new InputFile(name, "", sizeOrZero(jar));
             try {
                 SafeArchive a = SafeArchive.open(jar);
-                inputs.add(new InputFile(a.fileName(), a.sha256(), a.size()));
+                input = new InputFile(a.fileName(), a.sha256(), a.size());
                 scans.add(JarScanner.scan(a));
             } catch (SafeArchive.ArchiveException e) {
-                inputs.add(new InputFile(jar.getFileName().toString(), "", sizeOrZero(jar)));
-                diags.add(new Diagnostic(Severity.ERROR, e.code(), jar.getFileName().toString(), e.getMessage()));
+                diags.add(new Diagnostic(Severity.ERROR, e.code(), name, e.getMessage()));
+            } catch (RuntimeException e) {
+                // 解析器の不具合。この JAR だけを fail closed にして続ける
+                diags.add(new Diagnostic(Severity.ERROR, "INTERNAL_ERROR", name, "解析中に想定外の例外（" + e.getClass().getSimpleName() + "）"));
             }
+            inputs.add(input);
         }
         return analyze(inputs, scans, diags);
     }
@@ -103,6 +134,7 @@ public final class Analyzer {
         mods.forEach(m -> {
             available.add(m.id());
             available.addAll(m.provides());
+            available.addAll(m.nestedMods());
         });
         for (ModDescriptor m : mods) {
             for (var dep : m.depends().entrySet()) {
@@ -148,12 +180,33 @@ public final class Analyzer {
                 warnSubjects.computeIfAbsent(d.subject(), k -> new TreeSet<>()).add(d.code());
             }
         }
+        // 失敗した MOD に依存する MOD も fail closed にする（依存をたどって伝える）
+        Map<String, String> failedVia = new TreeMap<>();
+        mods.stream().map(ModDescriptor::id).filter(errorSubjects::contains).forEach(id -> failedVia.put(id, null));
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (ModDescriptor m : mods) {
+                if (failedVia.containsKey(m.id())) {
+                    continue;
+                }
+                for (String dep : m.depends().keySet()) {
+                    if (failedVia.containsKey(dep)) {
+                        failedVia.put(m.id(), dep);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
         List<FeaturePlan> plans = new ArrayList<>();
         for (ModDescriptor m : mods) {
             String subject = "mod:" + m.id();
-            if (errorSubjects.contains(m.id())) {
-                plans.add(new FeaturePlan(subject, Mode.A, Method.UNSUPPORTED, Status.ERROR, "重大な診断がある（fail closed）"));
-                plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.ERROR, "重大な診断がある（fail closed）"));
+            if (failedVia.containsKey(m.id())) {
+                String via = failedVia.get(m.id());
+                String reason = via == null ? "重大な診断がある（fail closed）" : "依存先 " + via + " が fail closed のため（fail closed）";
+                plans.add(new FeaturePlan(subject, Mode.A, Method.UNSUPPORTED, Status.ERROR, reason));
+                plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.ERROR, reason));
                 continue;
             }
             plans.add(new FeaturePlan(subject, Mode.A, Method.AUTO, Status.UNTESTED, "Java サーバー上で元の MOD のコードを実行する"));
@@ -164,7 +217,7 @@ public final class Analyzer {
         }
         for (Definition d : defs) {
             String subject = d.kind().name().toLowerCase() + ":" + d.id();
-            if (errorSubjects.contains(d.id()) || errorSubjects.contains(d.modId())) {
+            if (errorSubjects.contains(d.id()) || failedVia.containsKey(d.modId())) {
                 plans.add(new FeaturePlan(subject, Mode.A, Method.UNSUPPORTED, Status.ERROR, "重大な診断がある（fail closed）"));
                 plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.ERROR, "重大な診断がある（fail closed）"));
                 continue;

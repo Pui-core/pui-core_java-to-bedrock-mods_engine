@@ -32,8 +32,8 @@ import java.util.regex.Pattern;
  */
 public final class JarScanner {
 
-    /** 1 JAR の解析結果。 */
-    public record JarScan(SafeArchive archive, List<ModDescriptor> mods, List<Definition> definitions,
+    /** 1 JAR の解析結果。読み込んだ内容（SafeArchive）は保持しない（大量の JAR でメモリを使い切らないため）。 */
+    public record JarScan(List<ModDescriptor> mods, List<Definition> definitions,
             List<Diagnostic> diagnostics) {}
 
     static final Pattern IDENTIFIER = Pattern.compile("[a-z0-9_.-]+:[a-z0-9_.\\-/]+");
@@ -56,7 +56,7 @@ public final class JarScanner {
         List<ModDescriptor> mods = s.readMetadata();
         String ownerMod = mods.isEmpty() ? null : mods.get(0).id();
         List<Definition> defs = ownerMod == null ? List.of() : s.inferDefinitions(ownerMod);
-        return new JarScan(jar, mods, defs, List.copyOf(s.diags));
+        return new JarScan(mods, defs, List.copyOf(s.diags));
     }
 
     private void diag(Severity sev, String code, String subject, String message) {
@@ -68,6 +68,9 @@ public final class JarScanner {
     private List<ModDescriptor> readMetadata() {
         byte[] fabric = jar.text("fabric.mod.json");
         if (fabric != null) {
+            if (jar.has("META-INF/neoforge.mods.toml") || jar.has("META-INF/mods.toml")) {
+                diag(Severity.INFO, "MULTI_LOADER_JAR", jar.fileName(), "NeoForge/Forge のメタデータもあるが、Fabric の MOD として解析する");
+            }
             ModDescriptor d = readFabric(fabric);
             return d == null ? List.of() : List.of(d);
         }
@@ -80,69 +83,193 @@ public final class JarScanner {
         return List.of();
     }
 
+    /**
+     * fabric.mod.json を読む。必須でない欄の型が違っても例外は出さず、{@code INVALID_MOD_METADATA}（ERROR）を記録する。
+     * null を返すときは、必ず ERROR 診断を 1 件以上記録している。
+     */
     private ModDescriptor readFabric(byte[] bytes) {
         JsonObject o = parseObject("fabric.mod.json", bytes);
         if (o == null) {
-            return null;
+            return null; // parseObject が ERROR を記録済み
         }
         String id = str(o, "id");
         if (id == null || !NAMESPACE.matcher(id).matches()) {
-            diag(Severity.ERROR, "INVALID_MOD_METADATA", jar.fileName(), "fabric.mod.json の id が無いか不正: " + id);
+            diag(Severity.ERROR, "INVALID_MOD_METADATA", jar.fileName(), "fabric.mod.json の id が無いか不正");
             return null;
         }
+        Set<String> invalid = new TreeSet<>();
+
         Map<String, String> depends = new TreeMap<>();
-        if (o.get("depends") instanceof JsonObject dep) {
+        JsonElement depEl = o.get("depends");
+        if (depEl instanceof JsonObject dep) {
             for (var e : dep.entrySet()) {
-                depends.put(e.getKey(), versionSpec(e.getValue()));
-            }
-        }
-        List<String> provides = new ArrayList<>();
-        if (o.get("provides") instanceof JsonArray arr) {
-            arr.forEach(e -> {
-                if (e.isJsonPrimitive()) {
-                    provides.add(e.getAsString());
+                String spec = versionSpec(e.getValue());
+                if (spec == null) {
+                    invalid.add("depends." + e.getKey());
+                } else {
+                    depends.put(e.getKey(), spec);
                 }
-            });
+            }
+        } else if (depEl != null && !depEl.isJsonNull()) {
+            invalid.add("depends");
         }
+
+        Set<String> provides = new TreeSet<>();
+        forEachIn(o, "provides", invalid, v -> {
+            String s = asString(v);
+            if (s == null) {
+                return false;
+            }
+            provides.add(s);
+            return true;
+        });
+
         Set<String> entrypoints = new TreeSet<>();
-        if (o.get("entrypoints") instanceof JsonObject ep) {
+        JsonElement epEl = o.get("entrypoints");
+        if (epEl instanceof JsonObject ep) {
             for (var e : ep.entrySet()) {
-                if (e.getValue() instanceof JsonArray arr) {
-                    arr.forEach(v -> entrypoints.add(e.getKey() + "=" + (v.isJsonObject() ? str(v.getAsJsonObject(), "value") : v.getAsString())));
+                if (!(e.getValue() instanceof JsonArray arr)) {
+                    invalid.add("entrypoints." + e.getKey());
+                    continue;
+                }
+                for (JsonElement v : arr) {
+                    // 文字列か、{"adapter": ..., "value": "..."}
+                    String s = v instanceof JsonObject vo ? str(vo, "value") : asString(v);
+                    if (s == null) {
+                        invalid.add("entrypoints." + e.getKey());
+                    } else {
+                        entrypoints.add(e.getKey() + "=" + s);
+                    }
                 }
             }
+        } else if (epEl != null && !epEl.isJsonNull()) {
+            invalid.add("entrypoints");
         }
+
         Set<String> mixins = new TreeSet<>();
-        if (o.get("mixins") instanceof JsonArray arr) {
-            arr.forEach(v -> mixins.add(v.isJsonObject() ? String.valueOf(str(v.getAsJsonObject(), "config")) : v.getAsString()));
-        }
+        forEachIn(o, "mixins", invalid, v -> {
+            // 文字列か、{"config": "...", "environment": ...}
+            String s = v instanceof JsonObject vo ? str(vo, "config") : asString(v);
+            if (s == null) {
+                return false;
+            }
+            mixins.add(s);
+            return true;
+        });
+
         Set<String> nested = new TreeSet<>();
-        if (o.get("jars") instanceof JsonArray arr) {
-            arr.forEach(v -> {
-                if (v.isJsonObject() && str(v.getAsJsonObject(), "file") != null) {
-                    nested.add(str(v.getAsJsonObject(), "file"));
-                }
-            });
+        forEachIn(o, "jars", invalid, v -> {
+            String s = v instanceof JsonObject vo ? str(vo, "file") : null;
+            if (s == null) {
+                return false;
+            }
+            nested.add(s);
+            return true;
+        });
+
+        for (String field : new String[] {"version", "name", "environment"}) {
+            JsonElement f = o.get(field);
+            if (f != null && !f.isJsonNull() && asString(f) == null) {
+                invalid.add(field);
+            }
         }
-        if (!nested.isEmpty()) {
-            diag(Severity.INFO, "NESTED_JAR_NOT_SCANNED", id, "同梱 JAR " + nested.size() + " 個は未解析（v0.1 の対象外）。一覧は mods[].nestedJars");
+        if (!invalid.isEmpty()) {
+            diag(Severity.ERROR, "INVALID_MOD_METADATA", id, "fabric.mod.json の欄の型が不正: " + String.join(", ", invalid));
         }
+
+        Set<String> nestedMods = readNestedMods(id, nested);
         if (!mixins.isEmpty()) {
             diag(Severity.INFO, "HAS_MIXINS", id, "Mixin を使う（Mode A ではサーバー側で動作。Mode B では再現できない）");
         }
         String env = str(o, "environment");
         return new ModDescriptor(id, nz(str(o, "version")), nz(str(o, "name")), Loader.FABRIC, jar.fileName(),
-                env == null ? "*" : env, Collections.unmodifiableMap(depends), List.copyOf(new TreeSet<>(provides)), List.copyOf(entrypoints),
-                List.copyOf(mixins), List.copyOf(nested));
+                env == null ? "*" : env, Collections.unmodifiableMap(depends), List.copyOf(provides), List.copyOf(entrypoints),
+                List.copyOf(mixins), List.copyOf(nested), List.copyOf(nestedMods));
     }
 
+    /**
+     * 同梱 JAR の fabric.mod.json から、MOD ID と provides だけを読む。中の素材・定義は解析しない。
+     * 読めない同梱 JAR は WARN にする（その JAR に依存する MOD は DEPENDENCY_MISSING になりうる）。
+     */
+    private Set<String> readNestedMods(String ownerId, Set<String> files) {
+        Set<String> ids = new TreeSet<>();
+        for (String file : files) {
+            SafeArchive.NestedJar n = jar.nested(file);
+            if (n == null) {
+                diag(Severity.WARN, "NESTED_JAR_UNREADABLE", ownerId, "jars に書かれた同梱 JAR が無い: " + file);
+                continue;
+            }
+            if (n.error() != null) {
+                diag(Severity.WARN, "NESTED_JAR_UNREADABLE", ownerId, "同梱 JAR を読めない: " + file + "（" + n.error() + "）");
+                continue;
+            }
+            if (n.fabricModJson() == null) {
+                continue; // MOD ではないライブラリ
+            }
+            JsonObject meta;
+            try {
+                meta = JsonParser.parseString(new String(n.fabricModJson(), StandardCharsets.UTF_8)) instanceof JsonObject mo ? mo : null;
+            } catch (JsonParseException | IllegalStateException e) {
+                meta = null;
+            }
+            String nid = meta == null ? null : str(meta, "id");
+            if (nid == null || !NAMESPACE.matcher(nid).matches()) {
+                diag(Severity.WARN, "NESTED_JAR_UNREADABLE", ownerId, "同梱 JAR の fabric.mod.json が不正: " + file);
+                continue;
+            }
+            ids.add(nid);
+            if (meta.get("provides") instanceof JsonArray arr) {
+                arr.forEach(v -> {
+                    String s = asString(v);
+                    if (s != null) {
+                        ids.add(s);
+                    }
+                });
+            }
+        }
+        if (!files.isEmpty()) {
+            diag(Severity.INFO, "NESTED_JAR_NOT_SCANNED", ownerId, "同梱 JAR " + files.size()
+                    + " 個は MOD ID だけを依存の判定に使い、素材・定義は解析しない（一覧は mods[].nestedJars / nestedMods）");
+        }
+        return ids;
+    }
+
+    /** 配列の各要素を処理する。欄が配列でない場合や、処理が false を返した要素があれば {@code invalid} に記録する。 */
+    private static void forEachIn(JsonObject o, String key, Set<String> invalid, java.util.function.Predicate<JsonElement> each) {
+        JsonElement el = o.get(key);
+        if (el == null || el.isJsonNull()) {
+            return;
+        }
+        if (!(el instanceof JsonArray arr)) {
+            invalid.add(key);
+            return;
+        }
+        for (JsonElement v : arr) {
+            if (!each.test(v)) {
+                invalid.add(key);
+            }
+        }
+    }
+
+    /** 文字列なら値、それ以外（数値・null・配列・オブジェクト）は null。 */
+    private static String asString(JsonElement e) {
+        return e instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
+    }
+
+    /** depends の値（文字列か、文字列の配列）。型が違えば null。 */
     private static String versionSpec(JsonElement v) {
         if (v instanceof JsonArray arr) {
             List<String> parts = new ArrayList<>();
-            arr.forEach(e -> parts.add(e.getAsString()));
+            for (JsonElement e : arr) {
+                String s = asString(e);
+                if (s == null) {
+                    return null;
+                }
+                parts.add(s);
+            }
             return String.join(" || ", parts);
         }
-        return v.isJsonPrimitive() ? v.getAsString() : v.toString();
+        return asString(v);
     }
 
     // ---- 定義の推定 ----
@@ -245,7 +372,11 @@ public final class JarScanner {
 
     private void followModel(String ref, DefBuilder b, Set<String> visited, int depth) {
         String rid = normalize(ref);
-        if (rid == null || !visited.add(rid) || depth > 16) {
+        if (rid == null) {
+            diag(Severity.WARN, "INVALID_IDENTIFIER", b.id, "モデル参照が不正: " + ref);
+            return;
+        }
+        if (!visited.add(rid) || depth > 16) {
             return;
         }
         String ns = rid.substring(0, rid.indexOf(':'));
@@ -317,12 +448,17 @@ public final class JarScanner {
             if (e instanceof JsonObject o) {
                 return o;
             }
-            diag(Severity.WARN, "INVALID_JSON", jar.fileName() + "!" + name, "JSON オブジェクトではない");
+            // 空ファイルは JsonNull になる
+            diag(severityFor(name), "INVALID_JSON", jar.fileName() + "!" + name, "JSON オブジェクトではない");
         } catch (JsonParseException | IllegalStateException ex) {
-            diag(name.equals("fabric.mod.json") ? Severity.ERROR : Severity.WARN, "INVALID_JSON",
-                    jar.fileName() + "!" + name, "JSON として読めない: " + ex.getMessage());
+            diag(severityFor(name), "INVALID_JSON", jar.fileName() + "!" + name, "JSON として読めない: " + ex.getMessage());
         }
         return null;
+    }
+
+    /** fabric.mod.json が読めなければ MOD として扱えないので ERROR。素材ファイルは WARN（変換自体は試せる）。 */
+    private static Severity severityFor(String name) {
+        return name.equals("fabric.mod.json") ? Severity.ERROR : Severity.WARN;
     }
 
     private static String str(JsonObject o, String key) {

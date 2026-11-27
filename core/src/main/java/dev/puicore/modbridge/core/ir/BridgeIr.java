@@ -27,7 +27,11 @@ public record BridgeIr(
 
     public enum Loader { FABRIC, NEOFORGE, UNKNOWN }
 
-    /** MOD のメタデータ。{@code depends} の値は宣言どおりのバージョン範囲（未評価）。 */
+    /**
+     * MOD のメタデータ。{@code depends} の値は宣言どおりのバージョン範囲（未評価）。
+     *
+     * @param nestedMods 同梱 JAR が提供する MOD ID（{@code id} と {@code provides}）。依存の判定に使う
+     */
     public record ModDescriptor(
             String id,
             String version,
@@ -39,7 +43,8 @@ public record BridgeIr(
             List<String> provides,
             List<String> entrypoints,
             List<String> mixinConfigs,
-            List<String> nestedJars) {}
+            List<String> nestedJars,
+            List<String> nestedMods) {}
 
     public enum Kind { ITEM, BLOCK, RECIPE }
 

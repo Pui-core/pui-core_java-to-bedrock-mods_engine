@@ -1,6 +1,7 @@
 package dev.puicore.modbridge.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -81,6 +82,30 @@ class ScanCommandTest {
         assertEquals(Main.USAGE, run("scan", "--bogus"));
         assertEquals(Main.USAGE, run("scan", "x.jar", "--out"));
         assertEquals(Main.IO, run("report", dir.resolve("none.json").toString()));
+    }
+
+    @Test
+    void outの重複指定と不正なIRは拒否する_スタックトレースを出さない() throws IOException {
+        assertEquals(Main.USAGE, run("scan", "x.jar", "--out", "a.json", "--out", "b.json"));
+        Path bad = dir.resolve("bad.json");
+        for (String json : new String[] {"[]", "{\"schema\":[1]}", "{\"schema\":\"modbridge.bridge-ir\"}",
+                "{\"schema\":\"modbridge.bridge-ir\",\"schemaVersion\":1,\"inputs\":\"x\"}"}) {
+            Files.writeString(bad, json);
+            assertEquals(Main.FAILED, run("report", bad.toString()), json);
+        }
+    }
+
+    @Test
+    void 書き出しに失敗しても既存のファイルを壊さず一時ファイルも残さない() throws IOException {
+        // 置き換え先が中身のあるフォルダーだと、移動が失敗する
+        Path target = dir.resolve("out/ir.json");
+        Files.createDirectories(target);
+        Files.writeString(target.resolve("keep.txt"), "keep");
+        assertThrows(IOException.class, () -> Main.writeAtomically(target, "{}"));
+        assertEquals("keep", Files.readString(target.resolve("keep.txt")));
+        try (var s = Files.list(target.getParent())) {
+            assertEquals(1, s.count(), "一時ファイルを残さない");
+        }
     }
 
     @Test

@@ -30,14 +30,14 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 ### MOD の解析と診断
 
 ```sh
-modbridge validate mods/                       # フォルダー直下の *.jar をまとめて診断
+modbridge validate mods/                       # フォルダー直下の *.jar（大文字の .JAR も含む）をまとめて診断
 modbridge scan mods/ --out build/ir.json       # Bridge IR（JSON）を書き出す
 modbridge report build/ir.json                 # 方式と検証状態の一覧を表示
 ```
 
 JAR は展開せず、コードも実行しません（静的解析）。IR の形式と診断コードの一覧は [ADR-0003](docs/adr/0003-bridge-ir-and-static-scan.md) にあります。計画上の状態は、実機で検証されるまですべて `UNTESTED` です。
 
-`modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり、`2`=使い方の誤り、`3`=入出力の失敗です。
+`modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり（読めない JAR、JAR が 1 つも無い場合を含む）または不正な IR、`2`=使い方の誤り、`3`=IR の書き出しと IR ファイルの読込の失敗です。
 
 ## fixture MOD
 

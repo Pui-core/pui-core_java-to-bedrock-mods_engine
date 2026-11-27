@@ -173,6 +173,16 @@ class PackCompilerTest {
         PackCompiler.Result second = compile(List.of(jar("f.jar", changed)));
         assertEquals(first.mapping().pack().headerUuid(), second.mapping().pack().headerUuid());
         assertNotEquals(first.mapping().pack().version(), second.mapping().pack().version());
+        assertNotEquals(first.mapping().behaviorPack().version(), second.mapping().behaviorPack().version());
+        for (var pack : List.of(first.mapping().pack(), first.mapping().behaviorPack(),
+                second.mapping().pack(), second.mapping().behaviorPack())) {
+            var version = pack.version();
+            assertEquals(1, version.getFirst());
+            assertTrue(version.get(1) >= 0 && version.get(1) <= 16_383);
+            assertTrue(version.get(2) >= 0 && version.get(2) <= 16_383);
+            assertEquals(pack.contentSha256().substring(0, 7),
+                    "%07x".formatted((version.get(1) << 14) | version.get(2)));
+        }
     }
 
     @Test

@@ -60,7 +60,7 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/2";
+    static final String COMPILER_VERSION = "pack-compiler/3";
     static final long MAX_PACK_BYTES = 256L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
@@ -269,8 +269,7 @@ public final class PackCompiler {
         String contentSha = contentHash(files);
         UUID header = UUID.nameUUIDFromBytes(("modbridge:rp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         UUID module = UUID.nameUUIDFromBytes(("modbridge:rp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
-        // 内容が変わったら版も変える（Bedrock は UUID と版で取得済みのパックを使い回すため）。単調増加ではない
-        List<Integer> version = List.of(1, 0, Integer.parseUnsignedInt(contentSha.substring(0, 7), 16));
+        List<Integer> version = packVersion(contentSha);
         files.put("manifest.json", json(manifest(header, module, version, "resources", settings.packName())));
 
         byte[] pack = zip(files);
@@ -304,7 +303,7 @@ public final class PackCompiler {
         String bpSha = contentHash(withDependency(bpFiles, header.toString(), version));
         UUID bpHeader = UUID.nameUUIDFromBytes(("modbridge:bp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         UUID bpModule = UUID.nameUUIDFromBytes(("modbridge:bp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
-        List<Integer> bpVersion = List.of(1, 0, Integer.parseUnsignedInt(bpSha.substring(0, 7), 16));
+        List<Integer> bpVersion = packVersion(bpSha);
         Map<String, Object> bpManifest = manifest(bpHeader, bpModule, bpVersion, "data", settings.packName() + " (behavior)");
         // Map.of は要素が 2 つ以上だと反復の順序が実行ごとに変わりうるので、順序を固定する
         Map<String, Object> dependency = new LinkedHashMap<>();
@@ -329,6 +328,13 @@ public final class PackCompiler {
         outputs.put(ADDON_FILE, addon(pack, bpPack));
         outputs.put(MAPPING_FILE, (GSON.toJson(mapping) + "\n").getBytes(StandardCharsets.UTF_8));
         return new Result(true, List.copyOf(diags), outputs, mapping);
+    }
+
+    /** Bedrock で読み込める成分の範囲に収めつつ、内容ハッシュの先頭 28 ビットを保持する。 */
+    private static List<Integer> packVersion(String contentSha) {
+        int hashPrefix = Integer.parseInt(contentSha.substring(0, 7), 16);
+        int componentMask = (1 << 14) - 1;
+        return List.of(1, hashPrefix >>> 14, hashPrefix & componentMask);
     }
 
     /** JAR を開き、IR に記録した SHA-256 と照合する。失敗なら ERROR を記録して null。 */

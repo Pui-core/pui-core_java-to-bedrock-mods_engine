@@ -3,14 +3,14 @@
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
 > **現在の状態: v0.0.1 → v0.1.0 開発中**
-> 実機で検証済みの変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+> Windows 版 Bedrock のローカルワールドで単純なブロック素材の描画を確認しました。ビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトを提供しています。任意の MOD の互換は保証しません。
 
 ## 対応モード
 
 | モード | 実行主体 | 状態 |
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | サーバー側の起動と登録を確認済み。Bedrock 実機からの接続は未確認（[ADR-0002](docs/adr/0002-v0.0.1-target-versions-and-spike.md)） |
-| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | 未着手（v0.3.0） |
+| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
 ## 必要なもの
@@ -47,7 +47,7 @@ modbridge compile mods/ --out build/pack --cache .modbridge-cache
 # build/pack/ に modbridge-rp.mcpack（見た目）、modbridge-bp.mcpack（定義）、modbridge.mcaddon（両方）、mapping.json（対応表）
 ```
 
-単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。BDS・実機での動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
+単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。Windows 版 26.65 のローカルワールドで、立方体ブロックの面の向き・透過・日本語名を確認済みです。BDS の動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
 
 ### BDS への配置
 

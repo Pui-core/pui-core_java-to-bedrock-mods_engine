@@ -49,6 +49,16 @@ modbridge compile mods/ --out build/pack --cache .modbridge-cache
 
 単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。BDS・実機での動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
 
+### BDS への配置
+
+```sh
+modbridge bds-install build/pack --bds /path/to/bedrock-server                            # 計画を表示するだけ（既定）
+modbridge bds-install build/pack --bds /path/to/bedrock-server --apply --confirm-stopped   # BDS を止めてから配置する
+modbridge bds-rollback --bds /path/to/bedrock-server --backup <ID> --confirm-stopped        # 配置の前に戻す
+```
+
+配置の前に、ワールドと設定を `modbridge-backups/` に保存します。BDS が動いている（ワールドの DB がロックされている）ときは配置しません。詳しくは [ADR-0007](docs/adr/0007-bds-install-and-rollback.md) にあります。
+
 ## fixture MOD
 
 `fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` と、レシピ 2 つ（インゴット 9 個 ⇔ ブロック）を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。

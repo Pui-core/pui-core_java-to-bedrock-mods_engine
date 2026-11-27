@@ -1,6 +1,6 @@
 # ADR-0005: Mode A の接続ゲート
 
-- 状態: 採用（Bedrock 1人と Java 1人の同時入場、STRICT での実機接続拒否を確認）
+- 状態: 採用（Bedrock の操作・保存、STRICT と必須パック拒否時の入場制御を確認）
 - 日付: 2026-11-27
 - 関連: #5, #1、前提は ADR-0003
 
@@ -75,16 +75,16 @@
 
 1. [README の認証付きスパイク](../../README.md#v010-の認証実機検証)を `--keep-running` で起動する。サーバーログで `gate decision: allowBedrock=true`、Geyser の起動完了、Hydraulic による fixture のパック登録を確認する。
    ホワイトリストを使う場合は、サーバーコンソールの `fwhitelist add <ゲーマータグ>` で Bedrock の参加者を登録する。 [Floodgate のホワイトリスト](https://geysermc.org/wiki/floodgate/features/#whitelist-command)
-2. 同じ LAN で、別々の Microsoft アカウントにサインインした無改造の Bedrock 版 2 台をサーバーの LAN アドレスとポート `19132` に接続する。パックを受け入れると接続でき、拒否するとワールドに入れないことを確認する。サーバーと同じ PC からは、fixture を入れた同じ版の Fabric クライアントで `127.0.0.1:25565` に接続する。
-3. コンソールの `list` で名前を確認し、Bedrock 版の各プレイヤーに `give <プレイヤー名> pmb_fixture:test_ingot 16`、`give <プレイヤー名> pmb_fixture:test_block 2`、`give <プレイヤー名> minecraft:iron_pickaxe` を送る。両方のクライアントでインゴットの外観・名称・所持数を確認する。各プレイヤーがサバイバルでブロックを 2 個置き、片方をツルハシで壊す。他方の Bedrock と Java 版からも同じ座標の変化を確認する。各プレイヤーについて、ドロップが 1 個だけ発生し、拾うと所持数が 1 増え、ツルハシの耐久が 1 減ることを確認する。もう片方のブロックは設置したままにする。
+2. 同じ LAN で、別々の Microsoft アカウントにサインインした無改造の Bedrock 版 2 台をサーバーの LAN アドレスとポート `19132` に接続する。リソースパックが読み込まれ、両方が入場することを確認する。パック拒否時の入場制御は後述のプロトコル試験で確認する。
+3. コンソールの `list` で名前を確認し、Bedrock 版の各プレイヤーに `give <プレイヤー名> pmb_fixture:test_ingot 16`、`give <プレイヤー名> pmb_fixture:test_block 2`、`give <プレイヤー名> minecraft:iron_pickaxe` を送る。両方のクライアントでインゴットの外観・名称・所持数を確認する。各プレイヤーがサバイバルでブロックを 2 個置き、片方をツルハシで壊す。互いの Bedrock クライアントで同じ座標の変化を確認する。各プレイヤーについて、ドロップが 1 個だけ発生し、拾うと所持数が 1 増え、ツルハシの耐久が 1 減ることを確認する。もう片方のブロックは設置したままにする。
 4. Bedrock 版を切断して接続し直す。さらにコンソールで `stop` を実行し、同じ作業フォルダーで起動する。残したブロック、アイテム数、ツルハシの耐久が維持されることを確認する。
-5. サーバーを止め、Bedrock 2 人のプレイヤーデータファイル（Java 26.3 では `spike-world/players/data/` にある各 UUID の `.dat`）の SHA-256 を控える。`mods/` に MOD メタデータを持たない検証用 JAR を追加して再起動し、`allowBedrock=false` と `MISSING_MOD_METADATA` を確認する。Bedrock の両方で入場前に拒否され、Java では接続できることを確かめる。Java 版またはコンソールから、手順 3 で残したブロックを同じ座標で確認する。`geyser reload` 後にも Bedrock の接続を試す。停止後に、Bedrock のプレイヤーデータの SHA-256 が同じであることを確認し、検証用 JAR を外して元の構成に戻す。
+5. サーバーを止め、Bedrock 2 人のプレイヤーデータファイル（Java 26.3 では `spike-world/players/data/` にある各 UUID の `.dat`）の SHA-256 を控える。`mods/` に MOD メタデータを持たない検証用 JAR を追加して再起動し、`allowBedrock=false` と `MISSING_MOD_METADATA` を確認する。Bedrock の両方が入場前に拒否されることを確かめる。コンソールから、手順 3 で残したブロックを同じ座標で確認する。`geyser reload` 後にも Bedrock の接続を試す。停止後に、Bedrock のプレイヤーデータの SHA-256 が同じであることを確認し、検証用 JAR を外して元の構成に戻す。
 
 証跡にはクライアントのバージョン、各操作の成否、拒否時の表示、再起動前後の座標と所持数、該当するサーバーログを残す。
 
 ### 実機試験の結果（2026-11-27〜28）
 
-Windows 上の隔離ワールドで Java 26.3、Fabric Loader 0.20.1、Geyser 2.12.1-b1312、Hydraulic 1.0.0-b132、Floodgate Fabric 2.2.7-b69、fixture 0.0.3 を使用した。Bedrock の待受は検証用の Tailscale アダプターに限定した。初回の Bedrock クライアント版は未記録。PC での再試験には、無改造の Windows 版 Bedrock 26.65 と fixture を入れた Java 26.3 を使用した。
+Windows 上の隔離ワールドで Java 26.3 サーバー、Fabric Loader 0.20.1、Geyser 2.12.1-b1312、Hydraulic 1.0.0-b132、Floodgate Fabric 2.2.7-b69、fixture 0.0.3 を使用した。Bedrock の待受は検証用の Tailscale アダプターに限定した。初回の Bedrock クライアント版は未記録。PC での再試験には、無改造の Windows 版 Bedrock 26.65 を使用した。
 
 | 項目 | 結果 |
 | --- | --- |
@@ -93,12 +93,17 @@ Windows 上の隔離ワールドで Java 26.3、Fabric Loader 0.20.1、Geyser 2.
 | 外観・取得・設置 | Bedrock で黄色のインゴットと青・橙のブロックの外観を確認。付与した試験用インゴットは16個、ブロックは2個、鉄のツルハシは1個。ブロックの設置はサーバーの保存統計で2回だった |
 | 破壊・回収・耐久 | Windows 版 Bedrock で設置済みの2個を鉄のツルハシで壊し、ドロップ2個を回収した。ブロックの `mined` と `picked_up` はそれぞれ2、ツルハシの `minecraft:damage` は2だった |
 | サーバー再起動 | PC からの再入場後もインゴット16個、ブロック2個、ツルハシの `minecraft:damage=2` を確認。ワールドの保存は、コンソールで設置した同種の検証用ブロックを同じ座標 `(0, 100, 0)` で確認した |
-| 同時入場 | 同じ PC の Bedrock 1人と Java 1人が同じワールドに同時入場したことを `list` で確認。Java 版でも試験用インゴットの取得を確認した |
-| STRICT の接続拒否 | メタデータの無い検証用 JAR を加えると `MISSING_MOD_METADATA` で Bedrock の入場を拒否した。Windows 版 Bedrock に日英の案内が表示され、`geyser reload` 後も拒否された。同じ非対応構成で Java 版は入場でき、Bedrock の接続試行後の `list` には Java 版の1人だけがいた |
+| STRICT の接続拒否 | メタデータの無い検証用 JAR を加えると `MISSING_MOD_METADATA` で Bedrock の入場を拒否した。Windows 版 Bedrock に日英の案内が表示され、`geyser reload` 後も拒否された |
 | 拒否時の保存データ | `geyser reload` を挟んだ2回の拒否試行の前後で、同じ座標の検証用ブロックと、Bedrock プレイヤーの `.dat` の SHA-256 が変わらないことを確認した |
 | リソースパック | `force-resource-packs: true` の構成で、新しい ID の検証用リソースパックを追加して接続した。Windows 版 Bedrock ではパックが自動で読み込まれ、拒否を選択できる画面は出なかった |
 
-#5 の残りは、別々の Bedrock アカウント2人と Java 版の同時入場、クライアント間での同じブロック操作の確認、Bedrock 2人での拒否試験、および必須パックを明示的に拒否した場合の入場制御。
+#5 の残りは、別々の Bedrock アカウント2人での同時入場、操作の同期、再接続・永続化、両方のクライアントでの STRICT 拒否の確認。
+
+### 必須リソースパックの拒否（2026-11-28）
+
+同じバージョンの Geyser、Hydraulic、fixture を使う別のワールドを Windows のループバックに限定して起動した。この試験環境では合成プレイヤーで接続するためログイン認証を無効にし、`force-resource-packs: true` にした。
+
+`bedrock-protocol@3.61.0` の検証用クライアント（Bedrock プロトコル 2225、RakNet）で、サーバーが `must_accept=true` でパック4個を案内することを確認した。クライアントが `ResourcePackClientResponse` の `REFUSED`（`cancel`）を返すと、サーバーは `disconnectionScreen.resourcePack` を返して切断した。同じ試験を2回実施し、いずれも `StartGame` は受信せず、サーバーの `list` は0人、新規プレイヤーの保存ファイルは0件だった。 [Geyser build 1312 のリソースパック処理](https://github.com/GeyserMC/Geyser/blob/0c326c3/core/src/main/java/org/geysermc/geyser/network/bedrock/UpstreamPacketHandler.java#L88-L172)
 
 ### 共通素材コンパイラの表示確認（#4）
 

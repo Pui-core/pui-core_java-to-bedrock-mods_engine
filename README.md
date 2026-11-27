@@ -3,7 +3,7 @@
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
 > **現在の状態: v0.0.1 → v0.1.0 開発中**
-> 実機で検証済みの変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+> Windows 版 Bedrock のローカルワールドで単純なブロック素材の描画を確認しました。ビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトを提供しています。任意の MOD の互換は保証しません。
 
 ## 対応モード
 

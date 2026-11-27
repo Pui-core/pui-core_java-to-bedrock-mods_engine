@@ -67,7 +67,7 @@ Epic #1 の横断ルールは「解析 → IR → 方式決定 → モード別�
 
 静的解析では、コードでだけ登録され素材を持たない定義が見つからない。そこで Mode A 用に、Fabric 専用サーバー上でレジストリを書き出す取得 MOD を作った。
 
-- **取得 MOD**: `platform-fabric/`（独立ビルド、MOD ID `modbridge_registry_dump`、環境は `server`）。サーバーの起動完了（`SERVER_STARTED`）後に、アイテム・ブロックのレジストリとレシピの一覧を書き出す。
+- **取得 MOD**: `platform-fabric/`（独立ビルド、環境は `server`。当初の MOD ID は `modbridge_registry_dump` で、ADR-0005 で接続ゲートを足したときに `modbridge` に変えた）。サーバーの起動完了（`SERVER_STARTED`）後に、アイテム・ブロックのレジストリとレシピの一覧を書き出す。
   - JVM 引数 `-Dmodbridge.registryDump=<file>` を付けたときだけ動く。付けなければ何もしないので、入れたままでも害は無い。
   - `-Dmodbridge.registryDump.stop=true` で、書き出した後にサーバーを止める。
   - 出力は決定的にする（ソート済み、時刻・パスなし）。`minecraft` 名前空間は含めない。読み込まれていた MOD の ID と版（同梱 JAR の MOD を含む）も記録する。

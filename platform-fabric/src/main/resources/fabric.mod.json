@@ -1,19 +1,22 @@
 {
 	"schemaVersion": 1,
-	"id": "modbridge_registry_dump",
+	"id": "modbridge",
 	"version": "${version}",
-	"name": "PuiModBridge Registry Dump",
-	"description": "サーバー起動後に、MOD が登録したアイテム・ブロック・レシピを JSON に書き出す。JVM 引数 -Dmodbridge.registryDump=<file> を付けたときだけ動く。",
+	"name": "PuiModBridge (Fabric)",
+	"description": "Mode A（Java サーバー + Geyser）用。Bedrock の接続ゲート（-Dmodbridge.gate、既定 strict）と、実行時レジストリの取得（-Dmodbridge.registryDump=<file>）。",
 	"authors": ["Pui-core"],
 	"license": "LicenseRef-Undecided",
 	"environment": "server",
 	"entrypoints": {
-		"server": ["dev.puicore.modbridge.platform.fabric.RegistryDump"]
+		"server": ["dev.puicore.modbridge.platform.fabric.ModBridgeFabric"]
 	},
 	"depends": {
 		"fabricloader": ">=0.20.1",
 		"minecraft": "~26.3",
 		"java": ">=25",
 		"fabric-lifecycle-events-v1": "*"
+	},
+	"suggests": {
+		"geyser-fabric": "*"
 	}
 }

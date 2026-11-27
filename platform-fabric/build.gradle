@@ -1,18 +1,70 @@
-// 実行時レジストリの取得 MOD（Mode A 用）。Fabric 専用サーバーで、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出す。
-// Minecraft 本体を取得するため、ルートのビルドとは分けた独立ビルドにしている（fixtures/fabric-fixture と同じ構成）。
+// PuiModBridge の Fabric サーバー用 MOD（Mode A）。
+// - 実行時レジストリの取得（-Dmodbridge.registryDump=<file>）
+// - Bedrock の接続ゲート（-Dmodbridge.gate=strict|permissive|off、既定 strict）
+// Minecraft 本体を取得するため、ルートのビルドとは分けた独立ビルドにしている。core は composite build で取り込み、JAR に同梱する。
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
 plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
 version = project.mod_version
 group = 'dev.puicore.modbridge'
-base { archivesName = 'modbridge-registry-dump' }
+base { archivesName = 'modbridge-fabric' }
+
+// Geyser の API は SNAPSHOT 版しか公開されていないので、版と SHA-256 を固定した Geyser-Fabric の配布物から取り出して
+// コンパイル時だけ参照する（実行時は、サーバーに入っている Geyser を使う）。値は scripts/spike-server.sh と同じ。
+def geyserUrl = 'https://download.geysermc.org/v2/projects/geyser/versions/2.12.1/builds/1312/downloads/fabric'
+def geyserSha = '9c059b51af0bd534922ca9633996fd124543291d137b9373edc95fc1a0d59276'
+def geyserNested = ['META-INF/jars/events-1.1-SNAPSHOT.jar', 'META-INF/jars/base-api-1.0.3.jar']
+def geyserDir = layout.buildDirectory.dir('geyser-api')
+
+def fetchGeyserApi = tasks.register('fetchGeyserApi') {
+	def outDir = geyserDir
+	outputs.dir(outDir)
+	inputs.property('sha256', geyserSha)
+	doLast {
+		def dir = outDir.get().asFile
+		dir.mkdirs()
+		def jar = new File(dir, 'Geyser-Fabric.jar')
+		def sha = { File f -> MessageDigest.getInstance('SHA-256').digest(f.bytes).encodeHex().toString() }
+		if (!jar.isFile() || sha(jar) != geyserSha) {
+			def part = new File(dir, 'Geyser-Fabric.jar.part')
+			def conn = new URL(geyserUrl).openConnection()
+			conn.setRequestProperty('User-Agent', 'modbridge-build')
+			conn.inputStream.withStream { part.bytes = it.bytes }
+			if (sha(part) != geyserSha) {
+				part.delete()
+				throw new GradleException('Geyser-Fabric の SHA-256 が一致しない')
+			}
+			jar.delete()
+			part.renameTo(jar)
+		}
+		new ZipFile(jar).withCloseable { z ->
+			geyserNested.each { name ->
+				def e = z.getEntry(name)
+				if (e == null) {
+					throw new GradleException('Geyser-Fabric に ' + name + ' が無い')
+				}
+				new File(dir, name.substring(name.lastIndexOf('/') + 1)).bytes = z.getInputStream(e).bytes
+			}
+		}
+	}
+}
 
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	// 使うのはサーバーのライフサイクルイベントだけ
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// core（解析・IR・接続ゲートの判定）を同梱する。Gson は Minecraft 本体のものを使うので同梱しない
+	implementation('dev.puicore.modbridge:core:' + project.core_version) { transitive = false }
+	include('dev.puicore.modbridge:core:' + project.core_version)
+
+	compileOnly files(geyserDir.map { it.file('Geyser-Fabric.jar') }, geyserDir.map { it.file('events-1.1-SNAPSHOT.jar') },
+			geyserDir.map { it.file('base-api-1.0.3.jar') }).builtBy(fetchGeyserApi)
 }
 
 processResources {

@@ -9,4 +9,7 @@ pluginManagement {
 	}
 }
 
-rootProject.name = 'modbridge-registry-dump'
+rootProject.name = 'modbridge-fabric'
+
+// core をルートのビルドから取り込む（dev.puicore.modbridge:core を置き換える）
+includeBuild('..')

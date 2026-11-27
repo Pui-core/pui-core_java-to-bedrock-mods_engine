@@ -68,4 +68,21 @@
 - STRICT で実行時レジストリを取れなかったときは、理由が `RUNTIME_REGISTRY_UNAVAILABLE` の 1 件だけになり、ほかの理由は出ない（判定は同じく断る）。
 - `/geyser reload` の後も登録が残るかは未確認。残らなければ、その後は Bedrock を制限しない（実機の確認項目に加える）。
 - core は Gson 2.15 向けにビルドし、実行時は Minecraft 同梱の Gson（26.3 では 2.14.0）を使う。版の違いで解析が失敗したときは、上のとおり Bedrock を断ったままにする。
-- #5 の残り（Floodgate の認証、アイテム・ブロックの操作の同期、複数人での実機確認）は別の PR で扱う。
+
+## v0.1.0 の認証・実機検証
+
+スクリプトの `--floodgate` は Minecraft 26.3 対応の Floodgate Fabric 2.2.7-b69 を SHA-256 で固定して読み込む。Java 側は `online-mode=true` とし、Bedrock 側は Geyser の `auth-type: floodgate`、Bedrock ログイン検証あり、リソースパック必須で起動する。ワールドとプレイヤーデータを認証方式ごとに保つため、従来のスパイクとは別の作業フォルダーを使う。Floodgate の鍵と生ログは共有しない。 [Floodgate の Fabric 設定](https://geysermc.org/wiki/floodgate/setup/modded/) · [固定した配布版](https://modrinth.com/mod/floodgate/version/m9eO07Zi)
+
+### Mode A の実機確認（#5）
+
+1. [README の認証付きスパイク](../../README.md#v010-の認証実機検証)を `--keep-running` で起動する。サーバーログで `gate decision: allowBedrock=true`、Geyser の起動完了、Hydraulic による fixture のパック登録を確認する。
+2. 同じ LAN で、別々の Microsoft アカウントにサインインした無改造の Bedrock 版 2 台をサーバーの LAN アドレスとポート `19132` に接続する。パックを受け入れると接続でき、拒否するとワールドに入れないことを確認する。サーバーと同じ PC からは、fixture を入れた同じ版の Fabric クライアントで `127.0.0.1:25565` に接続する。
+3. コンソールの `list` で名前を確認し、Bedrock 版の各プレイヤーに `give <プレイヤー名> pmb_fixture:test_ingot 16`、`give <プレイヤー名> pmb_fixture:test_block 2`、`give <プレイヤー名> minecraft:iron_pickaxe` を送る。両方のクライアントでインゴットの外観・名称・所持数を確認する。各プレイヤーがサバイバルでブロックを 2 個置き、片方をツルハシで壊す。他方の Bedrock と Java 版からも同じ座標の変化を確認する。各プレイヤーについて、ドロップが 1 個だけ発生し、拾うと所持数が 1 増え、ツルハシの耐久が 1 減ることを確認する。もう片方のブロックは設置したままにする。
+4. Bedrock 版を切断して接続し直す。さらにコンソールで `stop` を実行し、同じ作業フォルダーで起動する。残したブロック、アイテム数、ツルハシの耐久が維持されることを確認する。
+5. サーバーを止め、Bedrock 2 人のプレイヤーデータファイル（`spike-world/playerdata/` にある各 UUID の `.dat`）の SHA-256 を控える。`mods/` に MOD メタデータを持たない検証用 JAR を追加して再起動し、`allowBedrock=false` と `MISSING_MOD_METADATA` を確認する。Bedrock の両方で入場前に拒否され、Java では接続できることを確かめる。Java 版またはコンソールから、手順 3 で残したブロックを同じ座標で確認する。`geyser reload` 後にも Bedrock の接続を試す。停止後に、Bedrock のプレイヤーデータの SHA-256 が同じであることを確認し、検証用 JAR を外して元の構成に戻す。
+
+証跡にはクライアントのバージョン、各操作の成否、拒否時の表示、再起動前後の座標と所持数、該当するサーバーログを残す。実機の結果が出るまでは #5 の受け入れ条件を未達として扱う。
+
+### 共通素材コンパイラの表示確認（#4）
+
+上記の Mode A は Hydraulic の出力を使う。共通素材コンパイラの検証では `modbridge compile` が生成した `.mcaddon` を Bedrock の使い捨てローカルワールドに読み込み、RP と BP の両方を適用する。生成された識別子は `mapping.json` を参照し、テクスチャ・面の向き・透過・名称と、変換対象外の項目の診断を [ADR-0004](0004-asset-compiler-and-mapping.md) の対応範囲に照らして記録する。単純な fixture の外観の確認に加え、透過や面ごとの向きについてはそれぞれを判別できる素材で確認する。

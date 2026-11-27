@@ -3,13 +3,14 @@
 # 起動ログ（登録順序・Geyser/Hydraulic の初期化・ポート）を証跡として保存する。
 #
 # 使い方:
-#   MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh [--keep-running]
+#   MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh [--floodgate] [--keep-running]
 #
 # - Minecraft EULA（https://aka.ms/MinecraftEULA）への同意は実行者が環境変数で明示する。既定では起動しない。
 # - 既定では Geyser の起動完了を確認した後に stop で終了する。--keep-running では Bedrock 実機接続のため
 #   LAN 向けに待ち受けたまま起動し続ける（LAN 内の誰でも接続できる点に注意）。
 # - 取得物は全て固定版・SHA-256 照合済み。照合に失敗したら起動しない。
-# - 書き込むのはサーバー作業フォルダー（既定 local/spike-server）と証跡フォルダー（既定 evidence/raw）だけ。
+# - --floodgate では Java 認証と Floodgate を有効にし、既定で local/mode-a-server を使う。
+# - 書き込むのはサーバー作業フォルダーと証跡フォルダー（既定 evidence/raw）だけ。
 #   作業フォルダーは空か、このスクリプトが作った印（.modbridge-spike）のあるフォルダーに限る。
 # - 保存するログと画面表示は IP アドレスを伏せ字にする。
 # - platform-fabric の MOD をビルド済みなら一緒に入れ、実行時レジストリを <作業フォルダー>/registry-dump.json に書き出す。
@@ -19,13 +20,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORK="${SPIKE_DIR:-$ROOT/local/spike-server}"
 EVIDENCE="${SPIKE_EVIDENCE_DIR:-$ROOT/evidence/raw}"
 TIMEOUT_SEC="${SPIKE_TIMEOUT_SEC:-600}"
 KEEP_RUNNING=false
-mkdir -p "$WORK" "$EVIDENCE"
-WORK="$(cd "$WORK" && pwd)"; EVIDENCE="$(cd "$EVIDENCE" && pwd)"   # 相対パス指定でも cd 後に壊れないよう絶対化
-[[ "${1:-}" == "--keep-running" ]] && KEEP_RUNNING=true
+PROFILE=
+
+die() { echo "[spike] 中止: $*" >&2; exit 1; }
+for option in "$@"; do
+  case "$option" in
+    --keep-running) KEEP_RUNNING=true ;;
+    --floodgate) PROFILE=floodgate ;;
+    *) die "不明な引数: $option" ;;
+  esac
+done
+if [[ "$PROFILE" == floodgate ]]; then
+  WORK="${SPIKE_DIR:-$ROOT/local/mode-a-server}"
+else
+  WORK="${SPIKE_DIR:-$ROOT/local/spike-server}"
+fi
 
 # 固定版（docs/adr/0002 と gradle/libs.versions.toml を同時に更新する。MC と LOADER は CI が照合する）
 MC=26.3
@@ -40,8 +52,11 @@ URL[mods/Geyser-Fabric.jar]="https://download.geysermc.org/v2/projects/geyser/ve
 SHA[mods/Geyser-Fabric.jar]=9c059b51af0bd534922ca9633996fd124543291d137b9373edc95fc1a0d59276
 URL[mods/hydraulic-fabric.jar]="https://download.geysermc.org/v2/projects/hydraulic/versions/1.0.0/builds/132/downloads/fabric"
 SHA[mods/hydraulic-fabric.jar]=d08f5f5f3092d742cf5e95f0c0fd071ac1a9f4f8351486a4da659968a4766f90
+if [[ "$PROFILE" == floodgate ]]; then
+  URL[mods/Floodgate-Fabric.jar]="https://cdn.modrinth.com/data/bWrNNfkb/versions/m9eO07Zi/Floodgate-Fabric-2.2.7-b69.jar"
+  SHA[mods/Floodgate-Fabric.jar]=e647b71803734ce0462139844a204b557dc2b76843e11236eaac90c9e28f20bd
+fi
 
-die() { echo "[spike] 中止: $*" >&2; exit 1; }
 # IPv4 と IPv6（角括弧付き・括弧なし・:: 省略形）を伏せ字にする。時刻 hh:mm:ss（コロン 2 個・:: なし）は対象外。
 redact() {
   sed -u -E \
@@ -62,13 +77,21 @@ FIXTURE_JAR="$ROOT/fixtures/fabric-fixture/build/libs/pmb-fabric-fixture-$MOD_VE
 [[ -f "$FIXTURE_JAR" ]] || die "fixture JAR が無い。先に (cd fixtures/fabric-fixture && ./gradlew build) を実行する"
 DUMP_VERSION="$(sed -n 's/^mod_version=//p' "$ROOT/platform-fabric/gradle.properties")"
 DUMP_JAR="$ROOT/platform-fabric/build/libs/modbridge-fabric-$DUMP_VERSION.jar"
+if [[ "$PROFILE" == floodgate && ! -f "$DUMP_JAR" ]]; then
+  die "Floodgate 検証には接続ゲートが必要。先に (cd platform-fabric && ./gradlew build) を実行する"
+fi
 
 # 作業フォルダーの安全確認: 新規・空・このスクリプトの印つきのいずれかでなければ触らない
 if [[ -d "$WORK" && ! -f "$WORK/.modbridge-spike" && -n "$(ls -A "$WORK" 2>/dev/null)" ]]; then
   die "作業フォルダー $WORK は空でなく、スパイク用の印（.modbridge-spike）も無い。別のフォルダーを SPIKE_DIR に指定する"
 fi
+if [[ -f "$WORK/.modbridge-spike" && "$(<"$WORK/.modbridge-spike")" != "$PROFILE" ]]; then
+  die "Java 側の認証方式が異なるワールドは再利用できない。別のフォルダーを SPIKE_DIR に指定する"
+fi
 mkdir -p "$WORK/mods" "$EVIDENCE"
-touch "$WORK/.modbridge-spike"
+WORK="$(cd "$WORK" && pwd)"
+EVIDENCE="$(cd "$EVIDENCE" && pwd)"
+printf '%s\n' "$PROFILE" > "$WORK/.modbridge-spike"
 cd "$WORK"
 
 for f in "${!URL[@]}"; do
@@ -96,19 +119,53 @@ touch server.properties
 set_prop() {
   if grep -q "^$1=" server.properties; then sed -i "s|^$1=.*|$1=$2|" server.properties; else echo "$1=$2" >> server.properties; fi
 }
-set_prop online-mode false
+if [[ "$PROFILE" == floodgate ]]; then
+  set_prop online-mode true
+else
+  set_prop online-mode false
+fi
 set_prop server-ip 127.0.0.1
 set_prop server-port 25565
 set_prop level-name spike-world
 
-# Geyser 設定（初回起動で生成されるため、2 回目以降の起動で有効）
-# - 外部 STUN 問い合わせを止める
-# - RakNet も受ける（transport: both、NetherNet は UDP 19133）。従来の「IP とポート指定」で実機から接続できるようにする
-# - 自動停止モードでは Bedrock 待受を localhost に限定する
 GEYSER_CFG=config/Geyser-Fabric/config.yml
 FIRST_RUN=true
 if [[ -f "$GEYSER_CFG" ]]; then
   FIRST_RUN=false
+fi
+if [[ "$PROFILE" == floodgate ]]; then
+  BIND_ADDRESS=127.0.0.1
+  $KEEP_RUNNING && BIND_ADDRESS=0.0.0.0
+  if $FIRST_RUN; then
+    mkdir -p "$(dirname "$GEYSER_CFG")"
+    cat > "$GEYSER_CFG" <<EOF
+bedrock:
+  address: $BIND_ADDRESS
+  port: 19132
+  webrtc-port: 19133
+  transport: both
+  signaling:
+    stun-discovery: false
+java:
+  auth-type: floodgate
+gameplay:
+  force-resource-packs: true
+advanced:
+  bedrock:
+    validate-bedrock-login: true
+enable-metrics: false
+config-version: 12
+EOF
+  else
+    # 生成済み設定の他の項目は残し、検証に必須の値が変わっていれば起動を止める。
+    for setting in '  auth-type: floodgate' '  force-resource-packs: true' '    validate-bedrock-login: true'; do
+      grep -Fxq "$setting" "$GEYSER_CFG" || die "Floodgate 検証に必要な設定が無い: $setting ($GEYSER_CFG)"
+    done
+    sed -i "/^bedrock:/,/^[^ #]/{s/^  address: .*/  address: $BIND_ADDRESS/;}" "$GEYSER_CFG"
+    grep -Fxq "  address: $BIND_ADDRESS" "$GEYSER_CFG" || die "Geyser の待受アドレスを設定できない"
+  fi
+elif ! $FIRST_RUN; then
+  # 従来のスパイクでは Geyser が初回起動時に設定を生成する。
   sed -i -e 's/^    stun-discovery: true$/    stun-discovery: false/' \
          -e 's/^  transport: nethernet$/  transport: both/' \
          -e 's/^  webrtc-port: 0$/  webrtc-port: 19133/' "$GEYSER_CFG"
@@ -117,19 +174,20 @@ if [[ -f "$GEYSER_CFG" ]]; then
   else
     sed -i 's/^  address: 0\.0\.0\.0$/  address: 127.0.0.1/' "$GEYSER_CFG"
   fi
+else
+  echo "[spike] 初回起動: Geyser 設定を生成する（この回だけ既定設定のため STUN 問い合わせと 0.0.0.0 待受が発生する）"
 fi
-$FIRST_RUN && echo "[spike] 初回起動: Geyser 設定を生成する（この回だけ既定設定のため STUN 問い合わせと 0.0.0.0 待受が発生する）"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$EVIDENCE/spike-server-$STAMP.log"
 echo "[spike] 起動: ログ → $LOG"
 {
-  echo "# spike-server $STAMP first_run=$FIRST_RUN keep_running=$KEEP_RUNNING"
+  echo "# spike-server $STAMP first_run=$FIRST_RUN keep_running=$KEEP_RUNNING profile=${PROFILE:-legacy}"
   java -version 2>&1
   for f in "${!SHA[@]}"; do echo "sha256 ${SHA[$f]} $f"; done
   sha256sum mods/pmb-fabric-fixture.jar
   [[ -f mods/modbridge-fabric.jar ]] && sha256sum mods/modbridge-fabric.jar
-  grep -E '^  (address|port|transport|webrtc-port):|^    stun-discovery:' "$GEYSER_CFG" 2>/dev/null || true
+  grep -E '^  (address|port|transport|webrtc-port|auth-type|force-resource-packs):|^    (stun-discovery|validate-bedrock-login):' "$GEYSER_CFG" 2>/dev/null || true
 } | redact > "$LOG"
 
 JAVA_OPTS=(-Xmx2G -Duser.language=en -Duser.country=US -Dfile.encoding=UTF-8 "-Dmodbridge.spike=$STAMP")
@@ -155,7 +213,11 @@ force_kill_server() {
 # （Git Bash では名前付きパイプが Windows ネイティブプロセスに届かないため、通常のパイプを使う）
 STOP_REQ="$WORK/.spike-stop"; EXITED="$WORK/.spike-exit"; rm -f "$STOP_REQ" "$EXITED"
 { until [[ -f "$STOP_REQ" || -f "$EXITED" ]]; do sleep 1; done; echo stop; } \
-  | { java "${JAVA_OPTS[@]}" -jar fabric-server-launch.jar nogui 2>&1 | redact >> "$LOG"; echo "${PIPESTATUS[0]}" > "$EXITED"; } &
+  | { if java "${JAVA_OPTS[@]}" -jar fabric-server-launch.jar nogui 2>&1 | redact >> "$LOG"; then
+        echo 0 > "$EXITED"
+      else
+        echo "$?" > "$EXITED"
+      fi; } &
 PIPE_PID=$!
 # 中断（Ctrl-C・kill）時もサーバーを残さない
 trap 'force_kill_server; touch "$STOP_REQ"; exit 130' INT TERM
@@ -182,11 +244,14 @@ if [[ ! -f "$EXITED" ]]; then
 fi
 wait "$PIPE_PID" 2>/dev/null || true
 trap - INT TERM
+SERVER_EXIT=missing
+[[ -f "$EXITED" ]] && SERVER_EXIT="$(<"$EXITED")"
 rm -f "$STOP_REQ" "$EXITED"
 
 [[ "$result" == "started" ]] || die "起動を確認できなかった（$result）。ログ: $LOG"
+[[ "$SERVER_EXIT" == 0 ]] || die "サーバーが正常に停止しなかった（exit $SERVER_EXIT）。ログ: $LOG"
 echo "[spike] 停止完了。要点:"
-grep -nE 'Loading Minecraft|pmb-fixture|pmb_fixture|modbridge\]|Hydraulic|Geyser version|Registered|Done \(|signaling|RakNet|ERROR|Exception' "$LOG" | head -n 80 || true
+grep -nE 'Loading Minecraft|pmb-fixture|pmb_fixture|modbridge\]|Hydraulic|[Ff]loodgate|Geyser version|Registered|Done \(|signaling|RakNet|ERROR|Exception' "$LOG" | head -n 80 || true
 if [[ -f mods/modbridge-fabric.jar ]]; then
   [[ -f "$DUMP_FILE" ]] || die "取得 MOD を入れたが、実行時レジストリが書き出されていない。ログ: $LOG"
   echo "[spike] 実行時レジストリ: $DUMP_FILE"

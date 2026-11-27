@@ -102,6 +102,18 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実
 - 実機から接続するときは `--keep-running` を使います。同じ LAN の Bedrock クライアントで「サーバーを追加」を選び、この PC の LAN アドレスとポート 19132 を入力してください。
 - **`--keep-running` は LAN 全体に公開されます**。Java 側は `online-mode=false` で、ホワイトリストもありません。信頼できる LAN でだけ使い、確認が終わったらすぐ停止してください。
 
+### v0.1.0 の認証・実機検証
+
+fixture MOD と `platform-fabric` の両方をビルドしてから、認証付きの検証環境を起動します。
+
+```sh
+# Minecraft EULA に同意する場合だけ環境変数を付ける
+MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate
+MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate --keep-running
+```
+
+`--floodgate` は `local/mode-a-server` に専用ワールドを作ります。Java 版は認証付きでこの PC の `127.0.0.1:25565`、Bedrock 版は Floodgate 認証付きで `--keep-running` 時に LAN のポート `19132` から接続できます。操作・再接続・ワールドの再起動を確認する手順は [ADR-0005](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証) にあります。
+
 ## 構成
 
 ```text

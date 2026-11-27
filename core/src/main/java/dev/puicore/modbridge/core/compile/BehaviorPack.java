@@ -181,6 +181,11 @@ public final class BehaviorPack {
                 }
                 rows.add(s);
             }
+            Set<String> used = new TreeSet<>();
+            rows.forEach(row -> row.chars().filter(c -> c != ' ').forEach(c -> used.add(String.valueOf((char) c))));
+            if (!used.equals(new TreeSet<>(keys.keySet())) || keys.keySet().stream().anyMatch(k -> k.length() != 1 || k.equals(" "))) {
+                return Recipe.fail("pattern の文字と key が対応していない（未定義の文字か、使われないキーがある）");
+            }
             Map<String, Object> outKeys = new TreeMap<>();
             for (var k : keys.entrySet()) {
                 String id = ingredient(k.getValue(), available, vanilla);

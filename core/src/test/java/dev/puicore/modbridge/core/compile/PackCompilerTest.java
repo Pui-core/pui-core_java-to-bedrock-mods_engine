@@ -437,6 +437,68 @@ class PackCompilerTest {
     }
 
     @Test
+    void レシピの識別子が衝突したら何も作らない() throws IOException {
+        Map<String, byte[]> m = fixture("rc");
+        byte[] recipe = m.get("data/rc/recipe/test_ingot_from_block.json");
+        m.put("data/rc/recipe/a/b.json", recipe);
+        m.put("data/rc/recipe/a_b.json", recipe);
+        PackCompiler.Result r = compile(List.of(jar("rc.jar", m)));
+        assertFalse(r.ok());
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("ID_COLLISION") && d.subject().equals("rc:a_b")),
+                r.diagnostics().toString());
+    }
+
+    @Test
+    void patternとkeyが対応しない定形レシピは外す() throws IOException {
+        Map<String, byte[]> m = fixture("pk");
+        m.put("data/pk/recipe/undefined_char.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"XX\",\"X \"],"
+                + "\"key\":{\"#\":\"pk:test_ingot\"},\"result\":{\"id\":\"pk:test_block\"}}"));
+        m.put("data/pk/recipe/unused_key.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"##\"],"
+                + "\"key\":{\"#\":\"pk:test_ingot\",\"X\":\"pk:test_block\"},\"result\":{\"id\":\"pk:test_block\"}}"));
+        PackCompiler.Result r = compile(List.of(jar("pk.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "pk:undefined_char").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "pk:unused_key").status());
+    }
+
+    @Test
+    void 変換しないデータと素材のカテゴリを報告する() throws IOException {
+        Map<String, byte[]> m = fixture("dn");
+        m.put("data/dn/worldgen/configured_feature/ore.json", u("{}"));
+        m.put("data/dn/loot_table/blocks/test_block.json", u("{}"));
+        m.put("data/minecraft/tags/block/mineable/pickaxe.json", u("{\"values\":[\"dn:test_block\"]}"));
+        m.put("assets/dn/sounds.json", u("{}"));
+        m.put("assets/dn/sounds/hit.ogg", u("ogg"));
+        PackCompiler.Result r = compile(List.of(jar("dn.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        var d = r.diagnostics().stream().filter(x -> x.code().equals("DATA_NOT_CONVERTED")).findFirst().orElseThrow();
+        assertTrue(d.message().contains("data/dn/worldgen 1"), d.message());
+        assertTrue(d.message().contains("data/dn/loot_table 1"), d.message());
+        assertTrue(d.message().contains("data/minecraft/tags 1"), d.message());
+        assertTrue(d.message().contains("assets/dn/sounds 1"), d.message());
+        assertFalse(d.message().contains("recipe"), "レシピは変換するので数えない");
+        assertTrue(mapping(r).notConverted().stream().anyMatch(s -> s.startsWith("dn: ") && s.contains("worldgen")));
+    }
+
+    @Test
+    void 対応表が書き換えられたキャッシュは使わない() throws IOException {
+        Path f = jar("f.jar", fixture("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(f));
+        String key = PackPublisher.cacheKey(ir, PackCompiler.Settings.DEFAULT);
+        PackCompiler.Result r = PackCompiler.compile(ir, Map.of("f.jar", f), PackCompiler.Settings.DEFAULT);
+        Path cache = dir.resolve("cache");
+        String json = new String(r.outputs().get(PackCompiler.MAPPING_FILE), StandardCharsets.UTF_8);
+        Map<String, byte[]> tampered = new LinkedHashMap<>(r.outputs());
+        tampered.put(PackCompiler.MAPPING_FILE, json.replaceFirst("\"behavior\": \\[[\\s\\S]*?\\n  \\]", "\"behavior\": []")
+                .getBytes(StandardCharsets.UTF_8));
+        assertNotEquals(json, new String(tampered.get(PackCompiler.MAPPING_FILE), StandardCharsets.UTF_8));
+        PackPublisher.writeCache(cache, key, tampered);
+        assertNull(PackPublisher.readCache(cache, key), "BP のファイルと対応表が合わない");
+        PackPublisher.writeCache(cache, key, r.outputs());
+        assertTrue(PackPublisher.readCache(cache, key) != null);
+    }
+
+    @Test
     void 公開に失敗しても旧成果物を残し_他のフォルダーは消さない() throws IOException {
         PackCompiler.Result r = compile(List.of(jar("f.jar", fixture("pmb_fixture"))));
         Path out = dir.resolve("out");

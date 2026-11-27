@@ -394,6 +394,10 @@ public final class BdsInstaller {
             }
             out.put(e.getKey(), p.getAsBoolean());
         }
+        // 配置はワールドがあるときにしか行わないので、正しいバックアップではワールドは必ず「あった」
+        if (!out.get("worlds/" + world)) {
+            throw new IOException("backup.json でワールドが「無かった」ことになっている（正しいバックアップではありえない）");
+        }
         return new Backup(id, dir, world, out);
     }
 
@@ -411,9 +415,17 @@ public final class BdsInstaller {
             if (rel.startsWith("worlds/") && !fullWorld) {
                 for (String json : List.of("world_behavior_packs.json", "world_resource_packs.json")) {
                     Path s = saved == null ? null : saved.resolve(json);
-                    Files.deleteIfExists(target.resolve(json));
                     if (s != null && Files.isRegularFile(s)) {
-                        Files.copy(s, target.resolve(json), StandardCopyOption.REPLACE_EXISTING);
+                        // 一時ファイルに写してから置き換える（途中で止まっても JSON が消えたままにならない）
+                        Path tmp = Files.createTempFile(target, "." + json, ".tmp");
+                        try {
+                            Files.copy(s, tmp, StandardCopyOption.REPLACE_EXISTING);
+                            move(tmp, target.resolve(json));
+                        } finally {
+                            Files.deleteIfExists(tmp);
+                        }
+                    } else {
+                        Files.deleteIfExists(target.resolve(json));
                     }
                 }
                 continue;
@@ -451,8 +463,15 @@ public final class BdsInstaller {
                     staged = null;
                 } catch (IOException e) {
                     if (old != null) {
-                        move(old, target);
-                        old = null;
+                        Path keep = old;
+                        old = null; // 元に戻せなくても、旧フォルダーは消さない
+                        try {
+                            move(keep, target);
+                        } catch (IOException restore) {
+                            e.addSuppressed(restore);
+                            throw new IOException("入れ替えに失敗し、元のフォルダーも戻せなかった。元のフォルダーは " + keep.getFileName()
+                                    + " に残している", e);
+                        }
                     }
                     throw e;
                 }

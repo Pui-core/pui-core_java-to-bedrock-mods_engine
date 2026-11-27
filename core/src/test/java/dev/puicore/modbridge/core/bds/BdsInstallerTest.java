@@ -192,6 +192,7 @@ class BdsInstallerTest {
                 original.replace("\"existed\": {", "\"existed\": {\n    \"worlds/other\": false,"),
                 original.replace("\"existed\": {", "\"existed\": {\n    \"worlds/\": false,"),
                 original.replace(": true", ": \"yes\""),
+                original.replace("\"worlds/Bedrock level\": true", "\"worlds/Bedrock level\": false"),
                 original.replace("\"world\": \"Bedrock level\"", "\"world\": \"..\""),
                 original.replace("\"world\": \"Bedrock level\"", "\"world\": 3"))) {
             Files.writeString(meta, tampered);

@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "building",
+  "pattern": ["###", "###", "###"],
+  "key": {"#": "pmb_fixture:test_ingot"},
+  "result": {"id": "pmb_fixture:test_block", "count": 1}
+}

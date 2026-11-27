@@ -58,7 +58,7 @@ public final class PackPublisher {
         Map<String, byte[]> files = new LinkedHashMap<>();
         for (String line : Files.readAllLines(sums, StandardCharsets.UTF_8)) {
             String[] p = line.split("  ", 2);
-            if (p.length != 2 || !(p[1].equals(PackCompiler.PACK_FILE) || p[1].equals(PackCompiler.MAPPING_FILE)) || files.containsKey(p[1])) {
+            if (p.length != 2 || !PackCompiler.OUTPUT_FILES.contains(p[1]) || files.containsKey(p[1])) {
                 return null;
             }
             Path f = dir.resolve(p[1]);
@@ -71,11 +71,11 @@ public final class PackPublisher {
             }
             files.put(p[1], b);
         }
-        // 2 つとも揃っていて、対応表に記録した内容のハッシュがパックと一致するときだけ使う
-        if (files.size() != 2 || !files.containsKey(PackCompiler.PACK_FILE) || !files.containsKey(PackCompiler.MAPPING_FILE)) {
+        // 成果物がすべて揃っていて、対応表に記録した内容のハッシュが各パックと一致するときだけ使う
+        if (files.size() != PackCompiler.OUTPUT_FILES.size()) {
             return null;
         }
-        return PackCompiler.consistent(files.get(PackCompiler.PACK_FILE), files.get(PackCompiler.MAPPING_FILE)) ? files : null;
+        return PackCompiler.consistent(files) ? files : null;
     }
 
     /** キャッシュに保存する。同じ鍵のものが既にあれば置き換える。 */

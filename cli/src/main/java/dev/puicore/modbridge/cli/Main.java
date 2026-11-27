@@ -202,7 +202,10 @@ public final class Main {
                 files = r.outputs();
                 Map<String, Long> status = new TreeMap<>();
                 r.mapping().entries().forEach(e -> status.merge(e.status(), 1L, Long::sum));
-                out.println("変換結果: " + status);
+                out.println("変換結果（リソースパック）: " + status);
+                Map<String, Long> bpStatus = new TreeMap<>();
+                r.mapping().behavior().forEach(e -> bpStatus.merge(e.kind() + " " + e.status(), 1L, Long::sum));
+                out.println("変換結果（ビヘイビアパック）: " + bpStatus);
                 if (cache != null) {
                     try {
                         PackPublisher.writeCache(cache, key, files);
@@ -217,7 +220,7 @@ public final class Main {
                 err.println("公開できない（旧成果物は残している）: " + e.getMessage());
                 return IO;
             }
-            out.println("公開した: " + outDir.resolve(PackCompiler.PACK_FILE) + " と " + PackCompiler.MAPPING_FILE);
+            out.println("公開した: " + outDir + "（" + String.join("、", PackCompiler.OUTPUT_FILES) + "）");
             return OK;
         } catch (InvalidPathException e) {
             err.println("パスとして使えない: " + e.getInput());

@@ -10,7 +10,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 | モード | 実行主体 | 状態 |
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | サーバー側の起動と登録を確認済み。Bedrock 実機からの接続は未確認（[ADR-0002](docs/adr/0002-v0.0.1-target-versions-and-spike.md)） |
-| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | 未着手（v0.3.0） |
+| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
 ## 必要なもの
@@ -47,7 +47,7 @@ modbridge compile mods/ --out build/pack --cache .modbridge-cache
 # build/pack/ に modbridge-rp.mcpack（見た目）、modbridge-bp.mcpack（定義）、modbridge.mcaddon（両方）、mapping.json（対応表）
 ```
 
-単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。BDS・実機での動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
+単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。Windows 版 26.65 のローカルワールドで、立方体ブロックの面の向き・透過・日本語名を確認済みです。BDS の動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
 
 ### BDS への配置
 

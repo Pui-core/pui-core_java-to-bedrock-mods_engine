@@ -169,6 +169,7 @@ public final class Analyzer {
     /**
      * 方式の計画。検証の記録がまだ無いので、状態は全て UNTESTED にする（SUPPORTED にはしない）。
      * 重大な問題（ERROR 診断）がある対象は fail closed として UNSUPPORTED / ERROR にする。
+     * 依存をたどって fail closed になった MOD には、{@code diags} に DEPENDENCY_FAILED を追加する。
      */
     static List<FeaturePlan> plan(List<ModDescriptor> mods, List<Definition> defs, List<Diagnostic> diags) {
         Set<String> errorSubjects = new TreeSet<>();
@@ -199,6 +200,12 @@ public final class Analyzer {
                 }
             }
         }
+        // 伝播で fail closed になった MOD も診断に出す（validate の件数で影響範囲が分かるように）
+        failedVia.forEach((id, via) -> {
+            if (via != null) {
+                diags.add(new Diagnostic(Severity.ERROR, "DEPENDENCY_FAILED", id, "依存先 " + via + " が fail closed のため、この MOD も扱えない"));
+            }
+        });
         List<FeaturePlan> plans = new ArrayList<>();
         for (ModDescriptor m : mods) {
             String subject = "mod:" + m.id();

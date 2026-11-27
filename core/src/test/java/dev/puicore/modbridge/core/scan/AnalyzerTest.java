@@ -197,6 +197,9 @@ class AnalyzerTest {
         assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:mod_b")).allMatch(p -> p.status() == Status.ERROR));
         assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:mod_a"))
                 .allMatch(p -> p.status() == Status.ERROR && p.reason().contains("依存先 mod_b")), ir.plans().toString());
+        var failed = codes(ir, "DEPENDENCY_FAILED");
+        assertEquals(1, failed.size());
+        assertEquals("mod_a", failed.get(0).subject());
         var cycle = codes(ir, "DEPENDENCY_CYCLE");
         assertEquals(1, cycle.size());
         assertEquals("依存が循環している: mod_a -> mod_b -> mod_a", cycle.get(0).message());
@@ -314,6 +317,30 @@ class AnalyzerTest {
         assertTrue(codes(ir, "DEPENDENCY_MISSING").isEmpty(), ir.diagnostics().toString());
         assertEquals(List.of("inner_alias", "inner_mod"), ir.mods().get(0).nestedMods());
         assertEquals(1, codes(ir, "NESTED_JAR_UNREADABLE").size(), "jars に書かれているのに無い同梱 JAR は警告");
+    }
+
+    @Test
+    void 同梱JARは宣言されたものだけを読み_展開量の合計で打ち切る() throws Exception {
+        // 0.8 MiB のゼロを先頭に置き、fabric.mod.json に届くまで展開させる
+        Map<String, byte[]> innerEntries = new LinkedHashMap<>();
+        innerEntries.put("pad.bin", new byte[800 << 10]);
+        innerEntries.put("fabric.mod.json", "{\"id\":\"inner\"}".getBytes(StandardCharsets.UTF_8));
+        byte[] inner = zip(innerEntries);
+        Map<String, byte[]> outer = new LinkedHashMap<>();
+        outer.put("fabric.mod.json", ("{\"id\":\"outer\",\"jars\":[{\"file\":\"META-INF/jars/n1.jar\"},"
+                + "{\"file\":\"META-INF/jars/n2.jar\"},{\"file\":\"META-INF/jars/n3.jar\"}]}").getBytes(StandardCharsets.UTF_8));
+        for (String n : List.of("n1", "n2", "n3", "extra")) {
+            outer.put("META-INF/jars/" + n + ".jar", inner);
+        }
+        Path p = dir.resolve("nested-bomb.jar");
+        Files.write(p, zip(outer));
+        // 同梱 JAR の展開量の合計は 2 MiB まで（1 個あたり約 0.8 MiB なので 3 個目で止まる）
+        var limits = new SafeArchive.Limits(1000, 64L << 20, 8L << 20, 2L << 20, 200);
+        SafeArchive a = SafeArchive.open(p, limits);
+        assertTrue(a.nested("META-INF/jars/n1.jar").fabricModJson() != null);
+        assertTrue(a.nested("META-INF/jars/n2.jar").fabricModJson() != null);
+        assertTrue(a.nested("META-INF/jars/n3.jar").error() != null, "合計の上限で打ち切る");
+        assertEquals(null, a.nested("META-INF/jars/extra.jar"), "jars に書かれていない同梱 JAR は読まない");
     }
 
     @Test

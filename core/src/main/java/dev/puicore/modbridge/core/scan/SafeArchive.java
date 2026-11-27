@@ -1,8 +1,15 @@
 package dev.puicore.modbridge.core.scan;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -11,7 +18,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -29,8 +35,8 @@ import java.util.zip.ZipInputStream;
  *   <li>エントリー数・個別サイズ・合計読込量・圧縮率に上限を設ける（ZIP 爆弾対策）。
  *       上限は宣言サイズではなく、実際に読んだバイト数で判定する</li>
  *   <li>内容を読むのはテキスト系（JSON・lang・toml・mcmeta）だけ。画像などは存在だけを記録する</li>
- *   <li>同梱 JAR（{@code *.jar} エントリー）は、中の {@code fabric.mod.json} だけを読む（依存の判定用）。
- *       同梱 JAR の中にさらに同梱された JAR は読まない</li>
+ *   <li>同梱 JAR は、外側の {@code fabric.mod.json} の {@code jars} に書かれたものだけを、中の {@code fabric.mod.json}
+ *       に限って読む（依存の判定用）。個数と展開量の合計にも上限を設ける。同梱 JAR の中にさらに同梱された JAR は読まない</li>
  *   <li>エラーメッセージには絶対パスを入れない（IR の再現性のため）</li>
  * </ul>
  */
@@ -64,6 +70,9 @@ public final class SafeArchive {
     private static final Pattern DRIVE = Pattern.compile("^[A-Za-z]:.*");
     /** 同梱 JAR の読込結果。{@code fabricModJson} は無ければ null、{@code error} は読めなかった理由（読めたら null）。 */
     public record NestedJar(byte[] fabricModJson, String error) {}
+
+    /** 1 JAR あたりで読む同梱 JAR の上限個数。 */
+    static final int MAX_NESTED_JARS = 1024;
 
     private static final Set<String> TEXT_SUFFIXES = Set.of(".json", ".lang", ".toml", ".mcmeta", ".properties");
 
@@ -140,6 +149,8 @@ public final class SafeArchive {
             if (zip.size() > limits.maxEntries()) {
                 throw new ArchiveException("JAR_LIMIT_EXCEEDED", "エントリー数が多すぎる（" + zip.size() + "、上限 " + limits.maxEntries() + "）");
             }
+            Set<String> declared = declaredNestedJars(zip, limits);
+            long[] nestedBudget = {limits.maxTotalReadBytes()}; // 同梱 JAR の展開量の合計
             var it = zip.entries();
             int count = 0;
             while (it.hasMoreElements()) {
@@ -155,8 +166,10 @@ public final class SafeArchive {
                 if (!names.add(name)) {
                     throw new ArchiveException("JAR_CORRUPT", "同名のエントリーが重複している: " + name);
                 }
-                if (name.toLowerCase(Locale.ROOT).endsWith(".jar")) {
-                    NestedJar n = readNested(zip, e, limits);
+                if (declared.contains(name)) {
+                    NestedJar n = nested.size() >= MAX_NESTED_JARS
+                            ? new NestedJar(null, "同梱 JAR の個数が上限（" + MAX_NESTED_JARS + "）を超えた")
+                            : readNested(zip, e, limits, nestedBudget);
                     if (n.fabricModJson() != null) {
                         totalRead += n.fabricModJson().length;
                     }
@@ -191,9 +204,15 @@ public final class SafeArchive {
      * 読めなくても JAR 全体は拒否しない（依存の判定ができないだけなので、理由を記録する）。
      * 展開量は「圧縮サイズ × 圧縮率の上限 + 1 MiB」と JAR サイズの上限の小さいほうで打ち切る。
      */
-    private static NestedJar readNested(ZipFile zip, ZipEntry e, Limits limits) {
-        long cap = Math.min(limits.maxJarBytes(), Math.max(e.getCompressedSize(), 1) * limits.maxRatio() + (1L << 20));
-        try (InputStream raw = zip.getInputStream(e); ZipInputStream in = new ZipInputStream(new CappedInputStream(raw, cap))) {
+    private static NestedJar readNested(ZipFile zip, ZipEntry e, Limits limits, long[] budget) {
+        long perJar = Math.min(limits.maxJarBytes(), Math.max(e.getCompressedSize(), 1) * limits.maxRatio() + (1L << 20));
+        if (budget[0] <= 0) {
+            return new NestedJar(null, "同梱 JAR の展開量の合計が上限（" + limits.maxTotalReadBytes() + " バイト）に達した");
+        }
+        CountingZipInputStream in = null;
+        try (InputStream raw = zip.getInputStream(e)) {
+            // 同梱 JAR 自体の大きさと、その中を展開した量の両方を数える
+            in = new CountingZipInputStream(new CappedInputStream(raw, perJar), Math.min(limits.maxJarBytes(), budget[0]));
             ZipEntry inner;
             while ((inner = in.getNextEntry()) != null) {
                 if (inner.getName().equals("fabric.mod.json")) {
@@ -201,10 +220,76 @@ public final class SafeArchive {
                 }
             }
             return new NestedJar(null, null);
-        } catch (ArchiveException ex) {
+        } catch (ArchiveException | LimitException ex) {
             return new NestedJar(null, ex.getMessage());
         } catch (IOException | IllegalArgumentException ex) {
             return new NestedJar(null, "同梱 JAR として読めない（" + ex.getClass().getSimpleName() + "）");
+        } finally {
+            if (in != null) {
+                budget[0] -= in.used();
+            }
+        }
+    }
+
+    /** 外側の fabric.mod.json の jars[].file。読めなければ空（メタデータの不正は JarScanner が報告する）。 */
+    private static Set<String> declaredNestedJars(ZipFile zip, Limits limits) throws IOException, ArchiveException {
+        ZipEntry meta = zip.getEntry("fabric.mod.json");
+        if (meta == null || meta.isDirectory()) {
+            return Set.of();
+        }
+        byte[] bytes;
+        try (InputStream in = zip.getInputStream(meta)) {
+            bytes = readBounded(in, "fabric.mod.json", Math.max(meta.getCompressedSize(), 1), limits);
+        }
+        Set<String> out = new TreeSet<>();
+        try {
+            if (JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)) instanceof JsonObject o
+                    && o.get("jars") instanceof JsonArray arr) {
+                for (JsonElement v : arr) {
+                    if (v instanceof JsonObject vo && vo.get("file") instanceof JsonPrimitive f && f.isString()) {
+                        out.add(f.getAsString());
+                    }
+                }
+            }
+        } catch (JsonParseException ex) {
+            return Set.of();
+        }
+        return out;
+    }
+
+    /** 同梱 JAR の上限による打切り。メッセージは固定の文言。 */
+    private static final class LimitException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        LimitException(String message) {
+            super(message);
+        }
+    }
+
+    /** 展開後のバイト数（エントリーを読み飛ばす分も含む）が上限を超えたら打ち切る ZIP 入力。 */
+    private static final class CountingZipInputStream extends ZipInputStream {
+        private final long cap;
+        private long used;
+
+        CountingZipInputStream(InputStream in, long cap) {
+            super(in);
+            this.cap = cap;
+        }
+
+        long used() {
+            return Math.min(used, cap);
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int n = super.read(b, off, len);
+            if (n > 0) {
+                used += n;
+                if (used > cap) {
+                    throw new LimitException("同梱 JAR の展開量が上限を超えた（ZIP 爆弾の疑い）");
+                }
+            }
+            return n;
         }
     }
 
@@ -229,7 +314,7 @@ public final class SafeArchive {
             if (n > 0) {
                 remaining -= n;
                 if (remaining < 0) {
-                    throw new IOException("展開量が上限を超えた（ZIP 爆弾の疑い）");
+                    throw new LimitException("同梱 JAR が大きすぎる（ZIP 爆弾の疑い）");
                 }
             }
             return n;

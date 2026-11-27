@@ -56,6 +56,15 @@ public record RuntimeRegistry(String fileName, String sha256, long size, String 
         return parse(String.valueOf(path.getFileName()), sha256(bytes), bytes.length, new String(bytes, StandardCharsets.UTF_8));
     }
 
+    /** メモリ上の JSON から読む（サーバー内で取得した直後に使う）。検証は {@link #read(Path)} と同じ。 */
+    public static RuntimeRegistry fromJson(String fileName, String json) {
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAX_BYTES) {
+            throw new IllegalArgumentException("実行時レジストリが大きすぎる（" + bytes.length + " バイト、上限 " + MAX_BYTES + "）");
+        }
+        return parse(fileName, sha256(bytes), bytes.length, json);
+    }
+
     static RuntimeRegistry parse(String fileName, String sha256, long size, String json) {
         JsonObject o;
         try {

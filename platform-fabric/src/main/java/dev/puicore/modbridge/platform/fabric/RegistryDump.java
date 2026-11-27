@@ -13,21 +13,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import net.fabricmc.api.DedicatedServerModInitializer;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
- * 実行時レジストリの取得。サーバーの起動完了後に、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出す。
+ * 実行時レジストリの取得。サーバーの起動完了後に、MOD が実際に登録したアイテム・ブロック・レシピを JSON にする。
+ * 呼び出すのは {@link ModBridgeFabric}。
  *
  * <ul>
- *   <li>JVM 引数 {@code -Dmodbridge.registryDump=<file>} を付けたときだけ動く。付けなければ何もしない</li>
+ *   <li>ファイルに書き出すのは、JVM 引数 {@code -Dmodbridge.registryDump=<file>} を付けたときだけ</li>
  *   <li>{@code -Dmodbridge.registryDump.stop=true} を付けると、書き出した後にサーバーを止める（自動化用）</li>
  *   <li>出力は決定的にする（ソート済み、時刻・パスを含めない）。{@code minecraft} 名前空間は含めない</li>
  *   <li>識別子は {@code namespace:path} の文字列。起動ごとに変わる数値 ID は出さない</li>
@@ -35,32 +32,20 @@ import org.slf4j.LoggerFactory;
  *
  * <p>形式は {@code modbridge.runtime-registry} 版 1。読込側は {@code dev.puicore.modbridge.core.runtime.RuntimeRegistry}。
  */
-public final class RegistryDump implements DedicatedServerModInitializer {
+final class RegistryDump {
     static final String SCHEMA = "modbridge.runtime-registry";
     static final int SCHEMA_VERSION = 1;
-    private static final Logger LOG = LoggerFactory.getLogger("modbridge_registry_dump");
 
-    @Override
-    public void onInitializeServer() {
-        String target = System.getProperty("modbridge.registryDump");
-        if (target == null || target.isBlank()) {
-            return;
+    private RegistryDump() {}
+
+    /** 書き出す。失敗してもサーバーは止めない（呼出し側はファイルが無いことで検出する）。 */
+    static void write(Path out, String json) {
+        try {
+            writeAtomically(out.toAbsolutePath(), json);
+            ModBridgeFabric.LOG.info("[modbridge] written: {}", out.getFileName());
+        } catch (IOException | RuntimeException e) {
+            ModBridgeFabric.LOG.error("[modbridge] write failed: " + out.getFileName(), e);
         }
-        boolean stop = Boolean.getBoolean("modbridge.registryDump.stop");
-        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            try {
-                Path out = Path.of(target).toAbsolutePath();
-                writeAtomically(out, toJson(server));
-                LOG.info("[modbridge] registry dump written: {}", out.getFileName());
-            } catch (IOException | RuntimeException e) {
-                // 取得の失敗はサーバーを止める理由にしない。呼出し側はファイルが無いことで検出する
-                LOG.error("[modbridge] registry dump failed", e);
-            }
-            if (stop) {
-                LOG.info("[modbridge] stopping server after registry dump");
-                server.halt(false);
-            }
-        });
     }
 
     static String toJson(MinecraftServer server) {

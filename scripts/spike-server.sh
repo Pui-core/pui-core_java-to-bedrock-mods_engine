@@ -12,7 +12,8 @@
 # - 書き込むのはサーバー作業フォルダー（既定 local/spike-server）と証跡フォルダー（既定 evidence/raw）だけ。
 #   作業フォルダーは空か、このスクリプトが作った印（.modbridge-spike）のあるフォルダーに限る。
 # - 保存するログと画面表示は IP アドレスを伏せ字にする。
-# - 取得 MOD（platform-fabric）をビルド済みなら一緒に入れ、実行時レジストリを <作業フォルダー>/registry-dump.json に書き出す。
+# - platform-fabric の MOD をビルド済みなら一緒に入れ、実行時レジストリを <作業フォルダー>/registry-dump.json に書き出す。
+#   接続ゲートの方針は MODBRIDGE_GATE（strict / permissive / off、既定 strict）。判定は config/modbridge/gate-report.json とログに出る。
 #   静的解析との突き合わせは modbridge scan <作業フォルダー>/mods --runtime <作業フォルダー>/registry-dump.json。
 # - 要 bash 4 以上（Linux / Git for Windows）。
 set -euo pipefail
@@ -60,7 +61,7 @@ MOD_VERSION="$(sed -n 's/^mod_version=//p' "$ROOT/fixtures/fabric-fixture/gradle
 FIXTURE_JAR="$ROOT/fixtures/fabric-fixture/build/libs/pmb-fabric-fixture-$MOD_VERSION.jar"
 [[ -f "$FIXTURE_JAR" ]] || die "fixture JAR が無い。先に (cd fixtures/fabric-fixture && ./gradlew build) を実行する"
 DUMP_VERSION="$(sed -n 's/^mod_version=//p' "$ROOT/platform-fabric/gradle.properties")"
-DUMP_JAR="$ROOT/platform-fabric/build/libs/modbridge-registry-dump-$DUMP_VERSION.jar"
+DUMP_JAR="$ROOT/platform-fabric/build/libs/modbridge-fabric-$DUMP_VERSION.jar"
 
 # 作業フォルダーの安全確認: 新規・空・このスクリプトの印つきのいずれかでなければ触らない
 if [[ -d "$WORK" && ! -f "$WORK/.modbridge-spike" && -n "$(ls -A "$WORK" 2>/dev/null)" ]]; then
@@ -82,10 +83,11 @@ cp "$FIXTURE_JAR" mods/pmb-fabric-fixture.jar
 DUMP_FILE="$WORK/registry-dump.json"
 rm -f "$DUMP_FILE"
 if [[ -f "$DUMP_JAR" ]]; then
-  cp "$DUMP_JAR" mods/modbridge-registry-dump.jar
+  rm -f mods/modbridge-registry-dump.jar   # 旧名
+  cp "$DUMP_JAR" mods/modbridge-fabric.jar
 else
-  rm -f mods/modbridge-registry-dump.jar
-  echo "[spike] 取得 MOD が無いので、実行時レジストリは書き出さない（作るには (cd platform-fabric && ./gradlew build)）"
+  rm -f mods/modbridge-registry-dump.jar mods/modbridge-fabric.jar
+  echo "[spike] platform-fabric の MOD が無いので、実行時レジストリと接続ゲートは使わない（作るには (cd platform-fabric && ./gradlew build)）"
 fi
 
 echo "eula=true" > eula.txt
@@ -126,12 +128,15 @@ echo "[spike] 起動: ログ → $LOG"
   java -version 2>&1
   for f in "${!SHA[@]}"; do echo "sha256 ${SHA[$f]} $f"; done
   sha256sum mods/pmb-fabric-fixture.jar
-  [[ -f mods/modbridge-registry-dump.jar ]] && sha256sum mods/modbridge-registry-dump.jar
+  [[ -f mods/modbridge-fabric.jar ]] && sha256sum mods/modbridge-fabric.jar
   grep -E '^  (address|port|transport|webrtc-port):|^    stun-discovery:' "$GEYSER_CFG" 2>/dev/null || true
 } | redact > "$LOG"
 
 JAVA_OPTS=(-Xmx2G -Duser.language=en -Duser.country=US -Dfile.encoding=UTF-8 "-Dmodbridge.spike=$STAMP")
-[[ -f mods/modbridge-registry-dump.jar ]] && JAVA_OPTS+=("-Dmodbridge.registryDump=$DUMP_FILE")
+# 試験用に JVM 引数を足す（例: SPIKE_EXTRA_JAVA_OPTS="-Dfabric.addMods=/path/to/mod.jar"）。空白で区切る
+# shellcheck disable=SC2206
+[[ -n "${SPIKE_EXTRA_JAVA_OPTS:-}" ]] && JAVA_OPTS+=(${SPIKE_EXTRA_JAVA_OPTS})
+[[ -f mods/modbridge-fabric.jar ]] && JAVA_OPTS+=("-Dmodbridge.registryDump=$DUMP_FILE" "-Dmodbridge.gate=${MODBRIDGE_GATE:-strict}")
 if $KEEP_RUNNING; then
   java "${JAVA_OPTS[@]}" -jar fabric-server-launch.jar nogui 2>&1 | redact | tee -a "$LOG"
   exit 0
@@ -182,7 +187,7 @@ rm -f "$STOP_REQ" "$EXITED"
 [[ "$result" == "started" ]] || die "起動を確認できなかった（$result）。ログ: $LOG"
 echo "[spike] 停止完了。要点:"
 grep -nE 'Loading Minecraft|pmb-fixture|pmb_fixture|modbridge\]|Hydraulic|Geyser version|Registered|Done \(|signaling|RakNet|ERROR|Exception' "$LOG" | head -n 80 || true
-if [[ -f mods/modbridge-registry-dump.jar ]]; then
+if [[ -f mods/modbridge-fabric.jar ]]; then
   [[ -f "$DUMP_FILE" ]] || die "取得 MOD を入れたが、実行時レジストリが書き出されていない。ログ: $LOG"
   echo "[spike] 実行時レジストリ: $DUMP_FILE"
 fi

@@ -56,12 +56,15 @@ modbridge compile mods/ --out build/pack --cache .modbridge-cache   # build/pack
 cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.2.jar
 ```
 
-## 実行時レジストリの取得（Mode A）
+## Fabric サーバー用 MOD（Mode A）
 
-`platform-fabric` は、Fabric 専用サーバー上で MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出す MOD です。JVM 引数 `-Dmodbridge.registryDump=<file>` を付けたときだけ動きます（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
+`platform-fabric` は、Fabric 専用サーバー（Geyser と一緒に使う）に入れる MOD です（MOD ID `modbridge`）。
+
+- **接続ゲート**: サーバーの起動後に `mods/` を解析し、Bedrock 版で重大な非対応があれば、Bedrock からの接続を断ります。Java 版の接続には関わりません。方針は JVM 引数 `-Dmodbridge.gate=strict|permissive|off`（既定 `strict`）で決めます。判定の根拠は `config/modbridge/gate-report.json` とサーバーログに出ます。詳しくは [ADR-0005](docs/adr/0005-mode-a-connection-gate.md) にあります。
+- **実行時レジストリの取得**: JVM 引数 `-Dmodbridge.registryDump=<file>` を付けると、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出します（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
 
 ```sh
-cd platform-fabric && ./gradlew build          # build/libs/modbridge-registry-dump-0.1.0.jar
+cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.2.0.jar（Geyser の API を取得するため、初回はネットワークが要る）
 ```
 
 ビルド済みなら、接続スパイクのスクリプトが自動で組み込み、`local/spike-server/registry-dump.json` に書き出します。

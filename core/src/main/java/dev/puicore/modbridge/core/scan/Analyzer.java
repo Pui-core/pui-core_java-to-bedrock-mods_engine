@@ -72,7 +72,7 @@ public final class Analyzer {
      * 1 つの JAR で想定外の例外が起きても、その JAR を INTERNAL_ERROR にして残りの解析を続ける。
      */
     public static BridgeIr analyzePaths(List<Path> paths) {
-        return analyzePaths(paths, null);
+        return analyzePaths(paths, (Path) null);
     }
 
     /**
@@ -81,10 +81,23 @@ public final class Analyzer {
      * @param runtime 実行時レジストリのファイル。null なら突き合わせない
      */
     public static BridgeIr analyzePaths(List<Path> paths, Path runtime) {
+        return analyzePaths(paths, runtime, null);
+    }
+
+    /**
+     * 実行時レジストリをメモリ上で渡す（サーバー内の接続ゲートが使う）。
+     *
+     * @param registry 実行時レジストリ。null なら突き合わせない
+     */
+    public static BridgeIr analyzePaths(List<Path> paths, RuntimeRegistry registry) {
+        return analyzePaths(paths, null, registry);
+    }
+
+    private static BridgeIr analyzePaths(List<Path> paths, Path runtime, RuntimeRegistry registry) {
         List<Path> jars = new ArrayList<>();
         List<Diagnostic> diags = new ArrayList<>();
-        RuntimeRegistry rt = null;
-        InputFile rtInput = null;
+        RuntimeRegistry rt = registry;
+        InputFile rtInput = registry == null ? null : new InputFile(registry.fileName(), registry.sha256(), registry.size());
         if (runtime != null) {
             String label = String.valueOf(runtime.getFileName());
             try {

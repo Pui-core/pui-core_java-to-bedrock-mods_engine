@@ -58,7 +58,7 @@ public final class PackPublisher {
         Map<String, byte[]> files = new LinkedHashMap<>();
         for (String line : Files.readAllLines(sums, StandardCharsets.UTF_8)) {
             String[] p = line.split("  ", 2);
-            if (p.length != 2 || !(p[1].equals(PackCompiler.PACK_FILE) || p[1].equals(PackCompiler.MAPPING_FILE))) {
+            if (p.length != 2 || !(p[1].equals(PackCompiler.PACK_FILE) || p[1].equals(PackCompiler.MAPPING_FILE)) || files.containsKey(p[1])) {
                 return null;
             }
             Path f = dir.resolve(p[1]);
@@ -71,7 +71,11 @@ public final class PackPublisher {
             }
             files.put(p[1], b);
         }
-        return files.isEmpty() ? null : files;
+        // 2 つとも揃っていて、対応表に記録した内容のハッシュがパックと一致するときだけ使う
+        if (files.size() != 2 || !files.containsKey(PackCompiler.PACK_FILE) || !files.containsKey(PackCompiler.MAPPING_FILE)) {
+            return null;
+        }
+        return PackCompiler.consistent(files.get(PackCompiler.PACK_FILE), files.get(PackCompiler.MAPPING_FILE)) ? files : null;
     }
 
     /** キャッシュに保存する。同じ鍵のものが既にあれば置き換える。 */
@@ -99,7 +103,17 @@ public final class PackPublisher {
      * @throws IOException 書けない、または出力先が別の用途のフォルダー（印が無く、空でない）
      */
     public static void publish(Path outDir, Map<String, byte[]> files) throws IOException {
-        Path out = outDir.toAbsolutePath();
+        Path out = outDir.toAbsolutePath().normalize();
+        if (out.getFileName() == null || out.getParent() == null) {
+            throw new IOException("出力先にはフォルダー名を指定する（ルートは使えない）");
+        }
+        Path cwd = Path.of("").toAbsolutePath().normalize();
+        if (cwd.startsWith(out)) {
+            throw new IOException("出力先が現在のフォルダーか、その親になっている");
+        }
+        if (Files.isSymbolicLink(out)) {
+            throw new IOException("出力先がシンボリックリンクになっている");
+        }
         if (Files.exists(out)) {
             if (!Files.isDirectory(out)) {
                 throw new IOException("出力先がフォルダーではない: " + out.getFileName());
@@ -129,8 +143,14 @@ public final class PackPublisher {
                 move(tmp, out);
             } catch (IOException e) {
                 if (old != null) {
-                    move(old, out); // 元に戻す
-                    old = null;
+                    Path keep = old;
+                    old = null; // 元に戻せなくても、旧成果物は消さない
+                    try {
+                        move(keep, out);
+                    } catch (IOException restore) {
+                        e.addSuppressed(restore);
+                        throw new IOException("公開に失敗し、旧成果物を元の場所に戻せなかった。旧成果物は " + keep.getFileName() + " に残している", e);
+                    }
                 }
                 throw e;
             }

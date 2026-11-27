@@ -264,6 +264,90 @@ class PackCompilerTest {
     }
 
     @Test
+    void 欠けたキャッシュや重複行のあるキャッシュは使わない() throws IOException {
+        Path f = jar("f.jar", fixture("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(f));
+        String key = PackPublisher.cacheKey(ir, PackCompiler.Settings.DEFAULT);
+        PackCompiler.Result r = PackCompiler.compile(ir, Map.of("f.jar", f), PackCompiler.Settings.DEFAULT);
+        Path cache = dir.resolve("cache");
+        PackPublisher.writeCache(cache, key, r.outputs());
+        Path sums = cache.resolve(key).resolve(PackPublisher.CHECKSUMS);
+        List<String> lines = Files.readAllLines(sums);
+        // 対応表だけの行にする（パックが欠ける）
+        Files.write(sums, lines.stream().filter(l -> l.endsWith(PackCompiler.MAPPING_FILE)).toList());
+        assertNull(PackPublisher.readCache(cache, key));
+        // 同じ行の重複
+        Files.write(sums, List.of(lines.get(0), lines.get(0), lines.get(1)));
+        assertNull(PackPublisher.readCache(cache, key));
+        // パックと対応表が別の生成のもの（チェックサムは書き直してある）
+        Map<String, byte[]> other = fixture("pmb_fixture");
+        other.put("assets/pmb_fixture/textures/item/test_ingot.png", png(0x010203, 255));
+        Files.createDirectories(dir.resolve("o"));
+        Path g = jar("o/f.jar", other);
+        PackCompiler.Result r2 = compile(List.of(g));
+        Map<String, byte[]> mixed = new LinkedHashMap<>();
+        mixed.put(PackCompiler.PACK_FILE, r2.outputs().get(PackCompiler.PACK_FILE));
+        mixed.put(PackCompiler.MAPPING_FILE, r.outputs().get(PackCompiler.MAPPING_FILE));
+        PackPublisher.writeCache(cache, key, mixed);
+        assertNull(PackPublisher.readCache(cache, key), "パックと対応表の内容のハッシュが合わない");
+        PackPublisher.writeCache(cache, key, r.outputs());
+        assertTrue(PackPublisher.readCache(cache, key) != null);
+    }
+
+    @Test
+    void 壊れたPNGと状態を持つblockstateは使わない() throws IOException {
+        Map<String, byte[]> m = fixture("bad");
+        // カラータイプ 2（アルファなし）で、IDAT が壊れている PNG
+        byte[] good = png(0x123456, 255);
+        byte[] broken = java.util.Arrays.copyOf(good, good.length);
+        for (int i = 41; i < broken.length - 12; i++) {
+            broken[i] = (byte) 0x55;
+        }
+        broken[25] = 2;
+        m.put("assets/bad/textures/block/test_block.png", broken);
+        m.put("assets/bad/blockstates/facing.json", u("{\"variants\":{\"facing=north\":{\"model\":\"bad:block/test_block\"}}}"));
+        PackCompiler.Result r = compile(List.of(jar("bad.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        assertEquals("SKIPPED", entry(r, "BLOCK", "bad:test_block").status());
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("TEXTURE_INVALID")), r.diagnostics().toString());
+        assertEquals("SKIPPED", entry(r, "BLOCK", "bad:facing").status(), "facing=north だけの変種も状態を持つ");
+        assertFalse(unzip(r.outputs().get(PackCompiler.PACK_FILE)).containsKey("textures/bad/block/test_block.png"),
+                "使えないテクスチャはパックに入れない");
+    }
+
+    @Test
+    void 参照されないPNGは読まない() throws IOException {
+        Map<String, byte[]> m = fixture("big");
+        byte[] noise = new byte[9 << 20]; // 個別の上限（8 MiB）を超える。圧縮が効かない内容にする
+        new java.util.Random(1).nextBytes(noise);
+        m.put("assets/big/textures/unused/huge.png", noise);
+        PackCompiler.Result r = compile(List.of(jar("big.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+    }
+
+    @Test
+    void 別のJARが同じテクスチャIDで違う画像を持つと何も作らない() throws IOException {
+        Map<String, byte[]> a = fixture("mod_a");
+        a.put("assets/mod_a/models/block/test_block.json", u("{\"parent\":\"minecraft:block/cube_all\",\"textures\":{\"all\":\"shared:block/t\"}}"));
+        a.put("assets/shared/textures/block/t.png", png(0x111111, 255));
+        Map<String, byte[]> b = fixture("mod_b");
+        b.put("assets/mod_b/models/block/test_block.json", u("{\"parent\":\"minecraft:block/cube_all\",\"textures\":{\"all\":\"shared:block/t\"}}"));
+        b.put("assets/shared/textures/block/t.png", png(0x222222, 255));
+        PackCompiler.Result r = compile(List.of(jar("a.jar", a), jar("b.jar", b)));
+        assertFalse(r.ok());
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("TEXTURE_CONFLICT")), r.diagnostics().toString());
+    }
+
+    @Test
+    void 現在のフォルダーやルートには公開しない() throws IOException {
+        PackCompiler.Result r = compile(List.of(jar("f.jar", fixture("pmb_fixture"))));
+        assertThrows(IOException.class, () -> PackPublisher.publish(Path.of("."), r.outputs()));
+        Path out = dir.resolve("x/../out2");
+        PackPublisher.publish(out, r.outputs());
+        assertTrue(Files.exists(dir.resolve("out2").resolve(PackCompiler.PACK_FILE)));
+    }
+
+    @Test
     void 大きすぎるPNGは展開せずに拒否する() {
         byte[] head = new byte[40];
         System.arraycopy(new byte[] {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0, head, 0, 8);

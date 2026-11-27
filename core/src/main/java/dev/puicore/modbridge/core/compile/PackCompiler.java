@@ -168,15 +168,14 @@ public final class PackCompiler {
                 diag(Severity.ERROR, "INPUT_MISSING", modEntry.getKey(), "MOD の JAR が入力に無い");
                 return fail();
             }
-            SafeArchive jar;
-            try {
-                jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, n -> n.startsWith("assets/") && n.endsWith(".png"));
-            } catch (SafeArchive.ArchiveException e) {
-                diag(Severity.ERROR, e.code(), file, e.getMessage());
+            // 1 回目はテキストだけを読んでモデルを解決し、必要な PNG を決める。2 回目にその PNG だけを読む
+            SafeArchive meta = open(path, file, sha.get(file), n -> false);
+            if (meta == null) {
                 return fail();
             }
-            if (!jar.sha256().equals(sha.get(file))) {
-                diag(Severity.ERROR, "INPUT_CHANGED", file, "解析の後で JAR が変わった（SHA-256 が IR と違う）");
+            Set<String> needed = neededPngs(new ModelResolver(meta), modEntry.getValue());
+            SafeArchive jar = open(path, file, sha.get(file), needed::contains);
+            if (jar == null) {
                 return fail();
             }
             ModelResolver resolver = new ModelResolver(jar);
@@ -252,6 +251,39 @@ public final class PackCompiler {
         return new Result(true, List.copyOf(diags), outputs, mapping);
     }
 
+    /** JAR を開き、IR に記録した SHA-256 と照合する。失敗なら ERROR を記録して null。 */
+    private SafeArchive open(Path path, String file, String expectedSha, java.util.function.Predicate<String> alsoRead) {
+        SafeArchive jar;
+        try {
+            jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, alsoRead);
+        } catch (SafeArchive.ArchiveException e) {
+            diag(Severity.ERROR, e.code(), file, e.getMessage());
+            return null;
+        }
+        if (!jar.sha256().equals(expectedSha)) {
+            diag(Severity.ERROR, "INPUT_CHANGED", file, "解析の後で JAR が変わった（SHA-256 が IR と違う）");
+            return null;
+        }
+        return jar;
+    }
+
+    /** 解決できたモデルが参照する、MOD の名前空間の PNG。 */
+    private static Set<String> neededPngs(ModelResolver resolver, List<Definition> defs) {
+        Set<String> out = new TreeSet<>();
+        for (Definition d : defs) {
+            ModelResolver.Resolved r = d.kind() == Kind.BLOCK ? resolver.block(d.id()) : resolver.item(d.id());
+            if (r.ok()) {
+                r.textures().values().stream().filter(id -> !id.startsWith("minecraft:")).forEach(id -> out.add(pngName(id)));
+            }
+        }
+        return out;
+    }
+
+    private static String pngName(String textureId) {
+        int c = textureId.indexOf(':');
+        return "assets/" + textureId.substring(0, c) + "/textures/" + textureId.substring(c + 1) + ".png";
+    }
+
     private static String skipReason(Definition d, FeaturePlan modeB) {
         if (d.source() == Source.RUNTIME_REGISTRY) {
             return "素材が無い（コードでだけ登録）";
@@ -275,17 +307,25 @@ public final class PackCompiler {
             return;
         }
         Map<String, String> faces = new TreeMap<>();
+        Map<String, Loaded> loaded = new TreeMap<>();
         Png.Alpha worst = Png.Alpha.OPAQUE;
         for (var f : r.textures().entrySet()) {
-            Texture t = texture(f.getValue(), d.id(), jar, textures, bytes);
-            if (t == null) {
+            Loaded l = texture(f.getValue(), d.id(), jar, textures, bytes);
+            if (l == null) {
+                // 一部の面だけ読めたテクスチャは登録しない（使われないテクスチャをパックに入れない）
                 entries.put(subject, skipped(d, bid, "テクスチャを使えない: " + f.getValue()));
                 return;
             }
-            faces.put(f.getKey(), t.shortName());
-            worst = Png.Alpha.valueOf(t.alpha()).compareTo(worst) > 0 ? Png.Alpha.valueOf(t.alpha()) : worst;
+            loaded.put(f.getValue(), l);
+            faces.put(f.getKey(), l.texture().shortName());
+            Png.Alpha a = Png.Alpha.valueOf(l.texture().alpha());
+            worst = a.compareTo(worst) > 0 ? a : worst;
         }
-        r.textures().values().forEach(id -> atlas.add(id));
+        loaded.forEach((id, l) -> {
+            textures.putIfAbsent(id, l.texture());
+            bytes.putIfAbsent(id, l.bytes());
+            atlas.add(id);
+        });
         String render = switch (worst) {
             case OPAQUE -> "opaque";
             case CUTOUT -> "alpha_test";
@@ -315,11 +355,14 @@ public final class PackCompiler {
             return;
         }
         String layer0 = r.textures().get("layer0");
-        Texture t = texture(layer0, d.id(), jar, textures, bytes);
-        if (t == null) {
+        Loaded l = texture(layer0, d.id(), jar, textures, bytes);
+        if (l == null) {
             entries.put(subject, skipped(d, bid, "テクスチャを使えない: " + layer0));
             return;
         }
+        Texture t = l.texture();
+        textures.putIfAbsent(layer0, t);
+        bytes.putIfAbsent(layer0, l.bytes());
         atlas.add(layer0);
         List<String> notes = new ArrayList<>();
         notes.add("親モデル " + r.parentModel());
@@ -328,19 +371,42 @@ public final class PackCompiler {
                 Map.of("icon", t.shortName()), null, List.copyOf(notes)));
     }
 
-    /** テクスチャを読み、検査して登録する。使えなければ WARN を出して null。 */
-    private Texture texture(String id, String subject, SafeArchive jar, Map<String, Texture> textures, Map<String, byte[]> bytes) {
-        Texture known = textures.get(id);
-        if (known != null) {
-            return known;
+    /** 読み込んだテクスチャ。定義の変換が成功してから登録する。 */
+    private record Loaded(Texture texture, byte[] bytes) {}
+
+    /** 使えなかったテクスチャ（同じ警告を何度も出さないため）。 */
+    private final Set<String> failedTextures = new TreeSet<>();
+
+    /**
+     * テクスチャを読んで検査する。使えなければ WARN を出して null。
+     * 別の JAR が同じテクスチャ ID で違う内容を持っていたら、TEXTURE_CONFLICT（ERROR）にする。
+     */
+    private Loaded texture(String id, String subject, SafeArchive jar, Map<String, Texture> textures, Map<String, byte[]> bytes) {
+        if (failedTextures.contains(id)) {
+            return null;
         }
+        Loaded l = loadTexture(id, subject, jar);
+        if (l == null) {
+            failedTextures.add(id);
+            return null;
+        }
+        byte[] known = bytes.get(id);
+        if (known != null && !java.util.Arrays.equals(known, l.bytes())) {
+            diag(Severity.ERROR, "TEXTURE_CONFLICT", id, "別々の JAR が、同じテクスチャ ID で違う画像を持っている");
+            failedTextures.add(id);
+            return null;
+        }
+        return l;
+    }
+
+    private Loaded loadTexture(String id, String subject, SafeArchive jar) {
         int c = id.indexOf(':');
         String ns = id.substring(0, c);
         if (ns.equals("minecraft")) {
             diag(Severity.WARN, "TEXTURE_VANILLA_UNSUPPORTED", subject, "バニラのテクスチャの参照は非対応: " + id);
             return null;
         }
-        String name = "assets/" + ns + "/textures/" + id.substring(c + 1) + ".png";
+        String name = pngName(id);
         byte[] png = jar.text(name);
         if (png == null) {
             diag(Severity.WARN, "TEXTURE_MISSING", subject, "テクスチャが JAR に無い: " + name);
@@ -357,16 +423,13 @@ public final class PackCompiler {
             diag(Severity.WARN, "TEXTURE_INVALID", subject, e.getMessage() + ": " + name);
             return null;
         }
-        Texture t = new Texture(BedrockIds.textureShortName(id), id, BedrockIds.texturePath(id), info.width(), info.height(),
-                info.alpha().name());
-        textures.put(id, t);
-        bytes.put(id, png);
-        return t;
+        return new Loaded(new Texture(BedrockIds.textureShortName(id), id, BedrockIds.texturePath(id), info.width(), info.height(),
+                info.alpha().name()), png);
     }
 
     /** Java の言語ファイルから、変換した定義の名前だけを Bedrock の .lang に移す。 */
     private static void collectLang(SafeArchive jar, List<Definition> defs, Map<String, Entry> entries, Map<String, Map<String, String>> out) {
-        Map<String, String> keys = new TreeMap<>(); // Java のキー → Bedrock のキー
+        Map<String, List<String>> keys = new TreeMap<>(); // Java のキー → Bedrock のキー
         for (Definition d : defs) {
             Entry e = entries.get(d.kind().name().toLowerCase() + ":" + d.id());
             if (e == null || e.status().equals("SKIPPED")) {
@@ -374,7 +437,9 @@ public final class PackCompiler {
             }
             int c = d.id().indexOf(':');
             String javaKey = (d.kind() == Kind.BLOCK ? "block." : "item.") + d.id().substring(0, c) + "." + d.id().substring(c + 1).replace('/', '.');
-            keys.put(javaKey, (d.kind() == Kind.BLOCK ? "tile." : "item.") + e.bedrock() + ".name");
+            // ブロックは tile.<id>.name。アイテムは資料で item.<id>.name と item.<id> が混在するので両方を出す（実機で確認後に絞る）
+            keys.put(javaKey, d.kind() == Kind.BLOCK ? List.of("tile." + e.bedrock() + ".name")
+                    : List.of("item." + e.bedrock() + ".name", "item." + e.bedrock()));
         }
         if (keys.isEmpty()) {
             return;
@@ -401,7 +466,8 @@ public final class PackCompiler {
             for (var k : keys.entrySet()) {
                 if (o.get(k.getKey()) instanceof JsonPrimitive p && p.isString()) {
                     // .lang は 1 行 1 項目。改行は空白にする
-                    out.computeIfAbsent(code, x -> new TreeMap<>()).put(k.getValue(), p.getAsString().replaceAll("[\\r\\n]+", " "));
+                    String value = p.getAsString().replaceAll("[\\r\\n]+", " ");
+                    k.getValue().forEach(bk -> out.computeIfAbsent(code, x -> new TreeMap<>()).put(bk, value));
                 }
             }
         }
@@ -444,6 +510,44 @@ public final class PackCompiler {
 
     private static byte[] json(Object o) {
         return (GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * パックと対応表が対応しているか（対応表の {@code pack.contentSha256} が、パックの中身から計算した値と一致するか）。
+     * キャッシュの検証に使う。読めないものは不一致とする。
+     */
+    static boolean consistent(byte[] pack, byte[] mappingJson) {
+        if (pack.length > MAX_PACK_BYTES) {
+            return false;
+        }
+        String expected;
+        try {
+            Mapping m = GSON.fromJson(new String(mappingJson, StandardCharsets.UTF_8), Mapping.class);
+            expected = m == null || m.pack() == null ? null : m.pack().contentSha256();
+        } catch (RuntimeException e) {
+            return false;
+        }
+        if (expected == null) {
+            return false;
+        }
+        Map<String, byte[]> files = new TreeMap<>();
+        long total = 0;
+        try (java.util.zip.ZipInputStream in = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(pack))) {
+            ZipEntry e;
+            while ((e = in.getNextEntry()) != null) {
+                byte[] b = in.readNBytes((int) Math.min(MAX_PACK_BYTES - total + 1, Integer.MAX_VALUE - 8));
+                total += b.length;
+                if (total > MAX_PACK_BYTES || files.put(e.getName(), b) != null) {
+                    return false;
+                }
+            }
+        } catch (IOException | IllegalArgumentException e) {
+            return false;
+        }
+        if (files.remove("manifest.json") == null) {
+            return false;
+        }
+        return contentHash(files).equals(expected);
     }
 
     /** パスと内容のハッシュから、パック全体の内容のハッシュを作る（manifest は含めない）。 */

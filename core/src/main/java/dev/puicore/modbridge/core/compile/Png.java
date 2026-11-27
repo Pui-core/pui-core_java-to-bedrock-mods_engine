@@ -15,7 +15,7 @@ import javax.imageio.ImageIO;
 public final class Png {
     /** 縦横の上限。Minecraft のテクスチャは通常 16〜512 px。 */
     public static final int MAX_SIDE = 4096;
-    /** 透過を調べるために展開する画素数の上限。 */
+    /** 展開して検査する画素数の上限（2048x2048）。これを超える PNG は検査できないので使わない。 */
     static final long MAX_DECODE_PIXELS = 4L << 20;
 
     public enum Alpha { OPAQUE, CUTOUT, TRANSLUCENT }
@@ -54,14 +54,11 @@ public final class Png {
         if (width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE) {
             throw new PngException("縦横が 0 か、上限（" + MAX_SIDE + " px）を超えている: " + width + "x" + height);
         }
-        boolean mayHaveAlpha = colorType == 4 || colorType == 6 || hasChunk(png, "tRNS");
-        if (!mayHaveAlpha) {
-            return new Info((int) width, (int) height, Alpha.OPAQUE);
-        }
         if (width * height > MAX_DECODE_PIXELS) {
-            // 展開せずに、安全側（半透明）として扱う
-            return new Info((int) width, (int) height, Alpha.TRANSLUCENT);
+            throw new PngException("画素数が上限（" + MAX_DECODE_PIXELS + "）を超えていて検査できない: " + width + "x" + height);
         }
+        boolean mayHaveAlpha = colorType == 4 || colorType == 6 || hasChunk(png, "tRNS");
+        // 壊れた PNG をパックに入れないため、透過の有無にかかわらず必ず展開して確かめる
         BufferedImage img;
         try {
             ImageIO.setUseCache(false);
@@ -71,6 +68,9 @@ public final class Png {
         }
         if (img == null || img.getWidth() != width || img.getHeight() != height) {
             throw new PngException("PNG を展開できない");
+        }
+        if (!mayHaveAlpha) {
+            return new Info((int) width, (int) height, Alpha.OPAQUE);
         }
         boolean cut = false;
         for (int y = 0; y < img.getHeight(); y++) {

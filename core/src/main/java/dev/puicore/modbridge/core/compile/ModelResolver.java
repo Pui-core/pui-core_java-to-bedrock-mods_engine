@@ -92,10 +92,11 @@ final class ModelResolver {
         if (state.has("multipart")) {
             return Resolved.fail("multipart の blockstate は非対応");
         }
-        if (!(state.get("variants") instanceof JsonObject variants) || variants.size() != 1) {
-            return Resolved.fail("blockstate の変種が 1 つではない（状態ごとの見た目は非対応）");
+        // 状態を持たないブロック（変種のキーが "" だけ）に限る。facing=north だけの変種などは、状態ごとの見た目なので非対応
+        if (!(state.get("variants") instanceof JsonObject variants) || variants.size() != 1 || !variants.has("")) {
+            return Resolved.fail("blockstate の変種が \"\" だけではない（状態ごとの見た目は非対応）");
         }
-        JsonElement v = variants.entrySet().iterator().next().getValue();
+        JsonElement v = variants.get("");
         if (v instanceof JsonArray arr) {
             if (arr.size() != 1) {
                 return Resolved.fail("見た目のランダムな変種は非対応");

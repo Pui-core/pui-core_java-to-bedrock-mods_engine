@@ -1,6 +1,8 @@
 package dev.puicore.modbridge.cli;
 
 import dev.puicore.modbridge.core.Doctor;
+import dev.puicore.modbridge.core.compile.PackCompiler;
+import dev.puicore.modbridge.core.compile.PackPublisher;
 import dev.puicore.modbridge.core.TargetVersions;
 import dev.puicore.modbridge.core.ir.BridgeIr;
 import dev.puicore.modbridge.core.ir.BridgeIr.Diagnostic;
@@ -60,6 +62,7 @@ public final class Main {
             case "scan" -> scan(rest, out, err, true);
             case "validate" -> scan(rest, out, err, false);
             case "report" -> report(rest, out, err);
+            case "compile" -> compile(rest, out, err);
             default -> {
                 err.println("不明なコマンド: " + args[0]);
                 usage(err);
@@ -133,6 +136,93 @@ public final class Main {
             printDiagnostics(ir, out);
         }
         return hasErrors(ir) ? FAILED : OK;
+    }
+
+    /** compile: 解析してからリソースパックと対応表を作り、出力フォルダーに公開する。 */
+    private static int compile(List<String> args, PrintStream out, PrintStream err) {
+        List<Path> inputs = new ArrayList<>();
+        Map<String, String> opts = new TreeMap<>();
+        boolean onlyFiles = false;
+        try {
+            for (int i = 0; i < args.size(); i++) {
+                String a = args.get(i);
+                if (!onlyFiles && a.equals("--")) {
+                    onlyFiles = true;
+                } else if (!onlyFiles && List.of("--out", "--runtime", "--cache", "--pack-name", "--pack-id").contains(a)) {
+                    if (i + 1 >= args.size()) {
+                        err.println(a + " には値が必要");
+                        return USAGE;
+                    }
+                    if (opts.put(a, args.get(++i)) != null) {
+                        err.println(a + " は 1 回だけ指定する");
+                        return USAGE;
+                    }
+                } else if (!onlyFiles && a.startsWith("-")) {
+                    err.println("不明なオプション: " + a);
+                    return USAGE;
+                } else {
+                    inputs.add(Path.of(a));
+                }
+            }
+            if (inputs.isEmpty() || !opts.containsKey("--out")) {
+                err.println("使い方: modbridge compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID]");
+                return USAGE;
+            }
+            PackCompiler.Settings settings;
+            try {
+                settings = new PackCompiler.Settings(opts.getOrDefault("--pack-name", PackCompiler.Settings.DEFAULT.packName()),
+                        opts.getOrDefault("--pack-id", PackCompiler.Settings.DEFAULT.packId()));
+            } catch (IllegalArgumentException e) {
+                err.println(e.getMessage());
+                return USAGE;
+            }
+            Path outDir = Path.of(opts.get("--out"));
+            Path cache = opts.containsKey("--cache") ? Path.of(opts.get("--cache")) : null;
+            Path runtime = opts.containsKey("--runtime") ? Path.of(opts.get("--runtime")) : null;
+
+            BridgeIr ir = Analyzer.analyzePaths(inputs, runtime);
+            String key = PackPublisher.cacheKey(ir, settings);
+            Map<String, byte[]> files = null;
+            try {
+                files = cache == null ? null : PackPublisher.readCache(cache, key);
+            } catch (IOException e) {
+                err.println("キャッシュを読めない（作り直す）: " + e.getClass().getSimpleName());
+            }
+            if (files != null) {
+                out.println("キャッシュを使う: " + key.substring(0, 12));
+            } else {
+                PackCompiler.Result r = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), settings);
+                printDiagnostics(ir, out);
+                out.println("## 生成の診断");
+                r.diagnostics().forEach(d -> out.println("[" + d.severity() + "] " + d.code() + " " + d.subject() + ": " + d.message()));
+                if (!r.ok()) {
+                    out.println("パックを作らなかった（出力フォルダーは変更していない）");
+                    return FAILED;
+                }
+                files = r.outputs();
+                Map<String, Long> status = new TreeMap<>();
+                r.mapping().entries().forEach(e -> status.merge(e.status(), 1L, Long::sum));
+                out.println("変換結果: " + status);
+                if (cache != null) {
+                    try {
+                        PackPublisher.writeCache(cache, key, files);
+                    } catch (IOException e) {
+                        err.println("キャッシュに保存できない（公開は続ける）: " + e.getClass().getSimpleName());
+                    }
+                }
+            }
+            try {
+                PackPublisher.publish(outDir, files);
+            } catch (IOException e) {
+                err.println("公開できない（旧成果物は残している）: " + e.getMessage());
+                return IO;
+            }
+            out.println("公開した: " + outDir.resolve(PackCompiler.PACK_FILE) + " と " + PackCompiler.MAPPING_FILE);
+            return OK;
+        } catch (InvalidPathException e) {
+            err.println("パスとして使えない: " + e.getInput());
+            return USAGE;
+        }
     }
 
     private static int report(List<String> args, PrintStream out, PrintStream err) {
@@ -240,9 +330,11 @@ public final class Main {
                   validate <jar|dir>... [--runtime FILE]
                                                   解析して診断だけを表示する
                   report <ir.json>                IR から互換性レポートを表示する
+                  compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID]
+                                                  Bedrock のリソースパック（.mcpack）と対応表を作り、DIR に公開する
                   （-- の後ろは「-」で始まる名前もファイルとして扱う）
                 終了コード: 0=成功, 1=ERROR 診断あり（読めない JAR を含む）・不正な IR,
                           2=使い方の誤り, 3=IR の書き出し・IR ファイルの読込の失敗
-                （compile は v0.2.0 以降で追加予定）""");
+                （compile が作るのはリソースパックだけ。単純なモデルだけに対応し、実機では未検証）""");
     }
 }

@@ -622,6 +622,14 @@ public final class PackCompiler {
      * キャッシュの検証に使う。読めないものは不一致とする。
      */
     static boolean consistent(Map<String, byte[]> outputs) {
+        try {
+            return checkConsistent(outputs);
+        } catch (RuntimeException e) {
+            return false; // 型の違う manifest など。読めないものは不一致とする
+        }
+    }
+
+    private static boolean checkConsistent(Map<String, byte[]> outputs) {
         byte[] rp = outputs.get(PACK_FILE);
         byte[] bp = outputs.get(BEHAVIOR_PACK_FILE);
         byte[] addon = outputs.get(ADDON_FILE);
@@ -728,9 +736,10 @@ public final class PackCompiler {
         Map<String, Integer> out = new TreeMap<>();
         for (String name : jar.names()) {
             String[] p = name.split("/", 4);
-            if (p.length < 4) {
+            if (p.length < 3) {
                 continue;
             }
+            // 名前空間の直下のファイル（assets/<ns>/sounds.json など）は、ファイル名をカテゴリにする
             if (p[0].equals("data") && !p[2].equals("recipe") && !p[2].equals("recipes")) {
                 out.merge("data/" + p[1] + "/" + p[2], 1, Integer::sum);
             } else if (p[0].equals("assets") && !convertedAssets.contains(p[2])) {

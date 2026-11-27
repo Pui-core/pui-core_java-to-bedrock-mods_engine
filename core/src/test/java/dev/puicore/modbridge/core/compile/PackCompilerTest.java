@@ -476,6 +476,7 @@ class PackCompilerTest {
         assertTrue(d.message().contains("data/dn/loot_table 1"), d.message());
         assertTrue(d.message().contains("data/minecraft/tags 1"), d.message());
         assertTrue(d.message().contains("assets/dn/sounds 1"), d.message());
+        assertTrue(d.message().contains("assets/dn/sounds.json 1"), "名前空間の直下のファイルも数える: " + d.message());
         assertFalse(d.message().contains("recipe"), "レシピは変換するので数えない");
         assertTrue(mapping(r).notConverted().stream().anyMatch(s -> s.startsWith("dn: ") && s.contains("worldgen")));
     }

@@ -114,7 +114,7 @@ public final class SafeArchive {
         return names.contains(name);
     }
 
-    /** テキスト系エントリーの内容。対象外・不在なら null。 */
+    /** テキスト系（と、開くときに指定したもの）のエントリーの内容。対象外・不在なら null。 */
     public byte[] text(String name) {
         return texts.get(name);
     }
@@ -129,6 +129,14 @@ public final class SafeArchive {
     }
 
     public static SafeArchive open(Path path, Limits limits) throws ArchiveException {
+        return open(path, limits, name -> false);
+    }
+
+    /**
+     * テキスト系に加えて、{@code alsoRead} が真を返すエントリー（テクスチャの PNG など）の内容も読む。
+     * 読んだ量は同じ上限（個別・合計・圧縮率）で数える。内容は {@link #text(String)} で取り出す。
+     */
+    public static SafeArchive open(Path path, Limits limits, java.util.function.Predicate<String> alsoRead) throws ArchiveException {
         long size;
         String sha;
         try {
@@ -176,7 +184,7 @@ public final class SafeArchive {
                     nested.put(name, n);
                     continue;
                 }
-                if (!isText(name)) {
+                if (!isText(name) && !alsoRead.test(name)) {
                     continue;
                 }
                 byte[] data;

@@ -40,6 +40,30 @@ public final class Analyzer {
 
     private Analyzer() {}
 
+    /**
+     * 入力のパス（ファイルとフォルダー）を、JAR のファイル名 → パスにする。規則は {@link #analyzePaths(List, Path)} と同じ。
+     * 同じ名前が複数あるときは最初のもの（IR では DUPLICATE_INPUT_NAME の ERROR になる）。
+     */
+    public static Map<String, Path> jarFiles(List<Path> paths) {
+        List<Path> jars = new ArrayList<>();
+        for (Path p : paths) {
+            if (Files.isDirectory(p)) {
+                try (Stream<Path> s = Files.list(p)) {
+                    s.filter(f -> f.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar") && Files.isRegularFile(f))
+                            .forEach(jars::add);
+                } catch (IOException | UncheckedIOException e) {
+                    // analyzePaths が IO_ERROR を出す
+                }
+            } else if (Files.isRegularFile(p)) {
+                jars.add(p);
+            }
+        }
+        jars.sort(Comparator.comparing((Path f) -> f.getFileName().toString()).thenComparing(f -> f.toAbsolutePath().toString()));
+        Map<String, Path> out = new TreeMap<>();
+        jars.forEach(f -> out.putIfAbsent(f.getFileName().toString(), f));
+        return out;
+    }
+
     /** 1 回に解析する JAR の上限。 */
     static final int MAX_INPUTS = 4096;
 

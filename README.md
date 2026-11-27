@@ -3,7 +3,7 @@
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
 > **現在の状態: v0.0.1 → v0.1.0 開発中**
-> 変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+> 実機で検証済みの変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、リソースパック生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
 
 ## 対応モード
 
@@ -39,6 +39,14 @@ modbridge report build/ir.json                 # 方式と検証状態の一覧�
 JAR は展開せず、コードも実行しません（静的解析）。コードでだけ登録される定義は、`--runtime` に実行時レジストリ（下の「実行時レジストリの取得」）を渡すと見つけられます。IR の形式と診断コードの一覧は [ADR-0003](docs/adr/0003-bridge-ir-and-static-scan.md) にあります。計画上の状態は、実機で検証されるまですべて `UNTESTED` です。
 
 `modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり（読めない JAR、JAR が 1 つも無い場合を含む）または不正な IR、`2`=使い方の誤り、`3`=IR の書き出しと IR ファイルの読込の失敗です。
+
+## リソースパックの生成（Mode B 向け、試作）
+
+```sh
+modbridge compile mods/ --out build/pack --cache .modbridge-cache   # build/pack/modbridge-rp.mcpack と mapping.json
+```
+
+単純なモデル（平面アイテム、立方体のブロック）だけを変換し、それ以外は理由を付けて対応表（`mapping.json`）で SKIPPED にします。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。実機での見え方は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) にあります。
 
 ## fixture MOD
 

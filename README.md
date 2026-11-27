@@ -64,7 +64,7 @@ modbridge bds-rollback --bds /path/to/bedrock-server --backup <ID> --confirm-sto
 `fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` と、レシピ 2 つ（インゴット 9 個 ⇔ ブロック）を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
 
 ```sh
-cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.3.jar
+cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.4.jar
 ```
 
 ## Fabric サーバー用 MOD（Mode A）
@@ -79,6 +79,14 @@ cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.2
 ```
 
 ビルド済みなら、接続スパイクのスクリプトが自動で組み込み、`local/spike-server/registry-dump.json` に書き出します。
+
+### Mode A の加工アダプター
+
+Fabric の `fabric.mod.json` に `modbridge-adapter` エントリーポイントを登録し、`Adapter` を実装します。運用者が JVM 引数 `-Dmodbridge.adapters.trusted=<提供元MODのID>` で許可した提供元から、対象 MOD の版とモードが一致するものを読み込みます。複数の提供元はカンマで区切ります。
+
+fixture 0.0.4 に含まれる `FixtureMachineAdapter` は、`pmb_fixture` を許可すると `pmb_fixture:test_block` を加工台にします。Bedrock から操作すると、銅インゴット2個を試験用インゴット1個に交換する画面が開きます。応答は30秒以内に1回使えます。加工時に距離、権限、ブロック、材料、出力先の空きを確認します。
+
+`-Dmodbridge.adapters.rules=<JSONファイル>` では、対象の MOD・版・モードと加工内容を宣言できます。[Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)を指定すると、Bedrock から鍛冶台を操作して丸石9個を圧縮できます。ルールはサーバーの運用者が指定します。
 
 ## 接続スパイク（Mode A）
 

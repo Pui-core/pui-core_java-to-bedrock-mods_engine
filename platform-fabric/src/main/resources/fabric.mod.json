@@ -15,7 +15,9 @@
 		"fabricloader": ">=0.20.1",
 		"minecraft": "~26.3",
 		"java": ">=25",
-		"fabric-lifecycle-events-v1": "*"
+		"fabric-lifecycle-events-v1": "*",
+		"fabric-events-interaction-v0": "*",
+		"fabric-networking-api-v1": "*"
 	},
 	"suggests": {
 		"geyser-fabric": "*"

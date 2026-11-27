@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.item.crafting.RecipeManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,65 +23,44 @@ import org.slf4j.LoggerFactory;
  *
  * <ul>
  *   <li>実行時レジストリの取得: {@code -Dmodbridge.registryDump=<file>}（{@link RegistryDump}）</li>
- *   <li>Bedrock の接続ゲート: {@code -Dmodbridge.gate=strict|permissive|off}（既定 strict）。
- *       サーバーの起動後に {@code mods/} を静的解析し、実行時レジストリと突き合わせてから判定する。
- *       判定が出るまでは Bedrock の接続を断る（Java の接続には関わらない）</li>
+ *   <li>Mode A の起動検査: {@code -Dmodbridge.gate=strict|permissive|off}（既定 strict）。
+ *       strict ではワールドと待受を初期化する前に MOD 構成を検査し、重大な非対応があれば起動を中断する</li>
  * </ul>
  */
 public final class ModBridgeFabric implements DedicatedServerModInitializer {
     static final Logger LOG = LoggerFactory.getLogger("modbridge");
+    private static final Policy POLICY = Policy.parse(System.getProperty("modbridge.gate"));
 
     /** 現在の判定。Geyser の接続イベント（別スレッド）から読む。 */
     static final AtomicReference<Decision> DECISION = new AtomicReference<>();
 
     @Override
     public void onInitializeServer() {
-        Policy policy = Policy.parse(System.getProperty("modbridge.gate"));
+        Policy policy = POLICY;
         DECISION.set(Decision.pending(policy));
         String dumpTarget = System.getProperty("modbridge.registryDump");
         boolean stop = Boolean.getBoolean("modbridge.registryDump.stop");
         boolean geyser = FabricLoader.getInstance().isModLoaded("geyser-fabric");
 
-        if (policy != Policy.OFF && geyser) {
-            // Geyser の初期化（MOD の初期化時）が済んだ後に登録する
-            ServerLifecycleEvents.SERVER_STARTING.register(server -> {
-                try {
-                    if (Boolean.getBoolean("modbridge.gate.testFailRegistration")) {
-                        throw new IllegalStateException("試験用: 登録の失敗を起こした（-Dmodbridge.gate.testFailRegistration）");
-                    }
-                    GeyserGate.register(DECISION);
-                } catch (Throwable e) { // Geyser の版違いによる LinkageError なども含める
-                    if (policy == Policy.STRICT) {
-                        // 断れないまま Bedrock を受け付けることになるので、起動を中断する（fail closed）。
-                        // halt では止まるまでに Geyser の待受（SERVER_STARTED）が始まりうるので、例外で起動処理ごと止める
-                        LOG.error("[modbridge] Geyser の接続ゲートを登録できないため、サーバーの起動を中断する。"
-                                + "Bedrock を制限せずに起動するには -Dmodbridge.gate=permissive か off を付ける", e);
-                        throw new IllegalStateException("modbridge: 接続ゲートを登録できない（strict）", e);
-                    } else {
-                        LOG.error("[modbridge] Geyser の接続ゲートを登録できない（permissive のため起動は続ける。Bedrock の接続は制限されない）", e);
-                    }
-                }
-            });
+        boolean permissive = policy == Policy.PERMISSIVE && geyser;
+        if (permissive) {
+            ServerLifecycleEvents.SERVER_STARTING.register(server -> registerGate(policy));
         }
         LOG.info("[modbridge] gate policy={} geyser={}", policy, geyser);
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            String json;
-            try {
-                json = RegistryDump.toJson(server);
-            } catch (RuntimeException e) {
-                LOG.error("[modbridge] registry collection failed", e);
-                json = null;
-            }
-            if (dumpTarget != null && !dumpTarget.isBlank() && json != null) {
-                RegistryDump.write(Path.of(dumpTarget), json);
-            }
-            if (policy != Policy.OFF && geyser) {
-                String registry = json;
-                // 解析はサーバーのスレッドを止めないよう、別スレッドで行う。終わるまでは pending（Bedrock を断る）
-                Thread t = new Thread(() -> analyze(policy, registry), "modbridge-gate");
-                t.setDaemon(true);
-                t.start();
+            boolean writeDump = dumpTarget != null && !dumpTarget.isBlank();
+            if (writeDump || permissive) {
+                String json = collectRegistry(server);
+                if (writeDump && json != null) {
+                    RegistryDump.write(Path.of(dumpTarget), json);
+                }
+                if (permissive) {
+                    // 警告のみの構成では起動を待たせず、解析中は Bedrock の接続を保留する。
+                    Thread worker = new Thread(() -> analyzePermissive(json), "modbridge-gate");
+                    worker.setDaemon(true);
+                    worker.start();
+                }
             }
             if (stop) {
                 LOG.info("[modbridge] stopping server after registry dump");
@@ -88,27 +69,69 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
         });
     }
 
-    static void analyze(Policy policy, String registryJson) {
+    private static void registerGate(Policy policy) {
         try {
-            Path game = FabricLoader.getInstance().getGameDir();
-            RuntimeRegistry rt = registryJson == null ? null : RuntimeRegistry.fromJson("runtime-registry", registryJson);
-            Path mods = game.resolve("mods").toAbsolutePath().normalize();
-            BridgeIr ir = Analyzer.analyzePaths(List.of(mods), rt);
-            Decision d = ConnectionGate.decide(ir, policy, notAnalyzed(mods));
-            if (rt == null && policy == Policy.STRICT) {
-                d = new Decision(false, policy, List.of("RUNTIME_REGISTRY_UNAVAILABLE"), 1,
-                        "サーバーの構成を確認できないため、Bedrock 版の接続を受け付けません（Server configuration could not be verified）");
+            if (Boolean.getBoolean("modbridge.gate.testFailRegistration")) {
+                throw new IllegalStateException("試験用: 登録の失敗を起こした（-Dmodbridge.gate.testFailRegistration）");
             }
-            Path report = FabricLoader.getInstance().getConfigDir().resolve("modbridge").resolve("gate-report.json");
-            RegistryDump.write(report, IrJson.write(ir));
-            DECISION.set(d);
-            LOG.info("[modbridge] gate decision: allowBedrock={} policy={} critical={} (report: config/modbridge/gate-report.json)",
-                    d.allowBedrock(), d.policy(), d.total());
-            d.reasons().forEach(r -> LOG.warn("[modbridge] gate reason: {}", r));
+            GeyserGate.register(DECISION);
+        } catch (Throwable e) { // Geyser の版違いによる LinkageError なども含める
+            if (policy == Policy.STRICT) {
+                throw new IllegalStateException("modbridge: Geyser の接続ゲートを登録できないため起動を中断します（strict）", e);
+            }
+            LOG.error("[modbridge] Geyser の接続ゲートを登録できない（permissive のため起動は続ける。Bedrock の接続は制限されない）", e);
+        }
+    }
+
+    /** 専用サーバーの最初のワールド保存より前に、読み込み済みのデータパックで strict の判定を行う。 */
+    public static void checkStartup(RecipeManager recipes) {
+        if (POLICY != Policy.STRICT || !FabricLoader.getInstance().isModLoaded("geyser-fabric")) {
+            return;
+        }
+        registerGate(POLICY);
+        Decision decision;
+        try {
+            decision = analyze(POLICY, RegistryDump.toJson(recipes));
+        } catch (Throwable e) { // レジストリや解析ライブラリが使えない場合も起動を中断する
+            throw new IllegalStateException("modbridge: MOD 構成を検証できないため起動を中断します（strict）", e);
+        }
+        if (!decision.allowBedrock()) {
+            throw new IllegalStateException("modbridge: 重大な非対応が " + decision.total()
+                    + " 件あるため起動を中断します（strict）。" + String.join(", ", decision.reasons()));
+        }
+        DECISION.set(decision);
+    }
+
+    private static String collectRegistry(MinecraftServer server) {
+        try {
+            return RegistryDump.toJson(server.getRecipeManager());
+        } catch (RuntimeException e) {
+            LOG.error("[modbridge] registry collection failed", e);
+            return null;
+        }
+    }
+
+    private static void analyzePermissive(String registryJson) {
+        try {
+            DECISION.set(analyze(Policy.PERMISSIVE, registryJson));
         } catch (Throwable e) { // Gson の版違いによる NoSuchMethodError なども含める
-            // 判定できなければ pending のまま（STRICT・PERMISSIVE とも Bedrock を断る）
+            // 判定できなければ pending のまま
             LOG.error("[modbridge] 接続ゲートの解析に失敗した。Bedrock の接続は断ったままにする", e);
         }
+    }
+
+    private static Decision analyze(Policy policy, String registryJson) {
+        FabricLoader loader = FabricLoader.getInstance();
+        RuntimeRegistry registry = registryJson == null ? null : RuntimeRegistry.fromJson("runtime-registry", registryJson);
+        Path mods = loader.getGameDir().resolve("mods").toAbsolutePath().normalize();
+        BridgeIr ir = Analyzer.analyzePaths(List.of(mods), registry);
+        Decision decision = ConnectionGate.decide(ir, policy, notAnalyzed(mods));
+        Path report = loader.getConfigDir().resolve("modbridge").resolve("gate-report.json");
+        RegistryDump.write(report, IrJson.write(ir));
+        LOG.info("[modbridge] gate decision: allowBedrock={} policy={} critical={} (report: config/modbridge/gate-report.json)",
+                decision.allowBedrock(), decision.policy(), decision.total());
+        decision.reasons().forEach(reason -> LOG.warn("[modbridge] gate reason: {}", reason));
+        return decision;
     }
 
     /**

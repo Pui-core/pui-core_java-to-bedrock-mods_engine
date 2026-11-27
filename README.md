@@ -9,7 +9,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 
 | モード | 実行主体 | 状態 |
 |---|---|---|
-| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock での試験用ブロックの設置・破壊・回収、非対応構成と必須パック拒否時の入場制御を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
+| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 2人の同時入場と試験用ブロックの設置・破壊の同期を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
 | B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
@@ -71,7 +71,7 @@ cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-
 
 `platform-fabric` は、Fabric 専用サーバー（Geyser と一緒に使う）に入れる MOD です（MOD ID `modbridge`）。
 
-- **接続ゲート**: サーバーの起動後に `mods/` を解析し、Bedrock 版で重大な非対応があれば、Bedrock からの接続を断ります。Java 版の接続には関わりません。方針は JVM 引数 `-Dmodbridge.gate=strict|permissive|off`（既定 `strict`）で決めます。判定の根拠は `config/modbridge/gate-report.json` とサーバーログに出ます。詳しくは [ADR-0005](docs/adr/0005-mode-a-connection-gate.md) にあります。
+- **起動時の互換性検査**では、`mods/` の解析で Bedrock 版に重大な非対応が見つかると、既定の `strict` でサーバーの起動を中断します。方針は JVM 引数 `-Dmodbridge.gate=strict|permissive|off` で設定します。判定の根拠は `config/modbridge/gate-report.json` とサーバーログに出ます。 [ADR-0005](docs/adr/0005-mode-a-connection-gate.md)
 - **実行時レジストリの取得**: JVM 引数 `-Dmodbridge.registryDump=<file>` を付けると、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出します（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
 
 ```sh

@@ -1,0 +1,8 @@
+{
+	"required": true,
+	"package": "dev.puicore.modbridge.platform.fabric.mixin",
+	"server": ["DedicatedServerStartupMixin"],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

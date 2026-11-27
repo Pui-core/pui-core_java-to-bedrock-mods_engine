@@ -1,10 +1,16 @@
-import { GameMode, ItemStack, system, world } from "@minecraft/server";
+import { GameMode, ItemStack, PlayerPermissionLevel, system, world } from "@minecraft/server";
 import { ActionFormData } from "@minecraft/server-ui";
 
 const sessionTicks = 600;
 
+function mayUseMachine(player) {
+    if (!player.isValid || player.getGameMode() !== GameMode.Survival) return false;
+    const role = player.playerPermissionLevel;
+    return role === PlayerPermissionLevel.Member || role === PlayerPermissionLevel.Operator;
+}
+
 function canOperate(player, target) {
-    if (!player.isValid || player.getGameMode() !== GameMode.Survival ||
+    if (!mayUseMachine(player) ||
         (player.getComponent("minecraft:health")?.currentValue ?? 0) <= 0 ||
         player.dimension.id !== target.dimension) {
         return false;
@@ -111,7 +117,7 @@ function registerMachineMenus(rules) {
 
     world.beforeEvents.playerInteractWithBlock.subscribe(event => {
         const station = stations.get(event.block.typeId);
-        if (!station || event.cancel || event.player.getGameMode() !== GameMode.Survival || event.player.isSneaking) return;
+        if (!station || event.cancel || !mayUseMachine(event.player) || event.player.isSneaking) return;
         event.cancel = true;
         if (!event.isFirstEvent) return;
         const { player, block } = event;

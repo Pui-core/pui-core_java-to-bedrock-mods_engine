@@ -98,9 +98,9 @@ modbridge compile pmb-fabric-fixture.jar fabric-api.jar --out build/machine-pack
 
 [Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)は Mode B でも使えます。複数の MOD のルールを使う場合は、1ファイルの `adapters` 配列にまとめます。
 
-加工台を操作すると、ビヘイビアパックのスクリプトがサバイバルのプレイヤーに選択画面を開きます。スニーク中は通常のブロック操作ができます。選択の有効期間は600サーバーティックで、処理結果はアクションバーに出ます。既定のスタックと結合できる材料を使います。必要な個数または出力先が足りなければ、所持品を変更しません。
+サバイバルのメンバーとオペレーターが加工台を操作できます。スクリプトは画面を開くときと選択を受け付けるときにこの権限を確認します。スニーク中は通常のブロック操作ができます。選択の有効期間は600サーバーティックで、処理結果はアクションバーに出ます。既定のスタックと結合できる材料を使います。必要な個数または出力先が足りなければ、所持品を変更しません。
 
-加工メニューを含むパックは Bedrock 1.21.90 以上と安定版の [`@minecraft/server` と `@minecraft/server-ui` 2.0.0](https://feedback.minecraft.net/hc/en-us/articles/37393460002957-Minecraft-Bedrock-Edition-1-21-90-Chase-the-Skies) を要求します。BDS と純正クライアントでの加工動作は実機確認待ちです。
+加工メニューを含むパックは Bedrock 1.21.100 以上と安定版の `@minecraft/server` 2.1.0、`@minecraft/server-ui` 2.0.0 を要求します。加工台には Bedrock 標準のプレイヤー権限が適用されます。他のアドオンが領域ごとに設ける操作制限との連携は未対応です。BDS と純正クライアントでの加工動作は実機確認待ちです。[Bedrock 1.21.100 の変更履歴](https://feedback.minecraft.net/hc/en-us/articles/38581287884557-Minecraft-1-21-100-Bedrock)
 
 ## 接続スパイク（Mode A）
 

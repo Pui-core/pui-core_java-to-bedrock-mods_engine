@@ -44,7 +44,7 @@ function player(id, slots = [new ItemStack(recipe.input.item, 2), undefined]) {
         }
     };
     return {
-        id, location: { ...location }, mode: "survival", isValid: true, inventory, slots,
+        id, location: { ...location }, mode: "survival", playerPermissionLevel: 1, isValid: true, inventory, slots,
         dimension: { id: "overworld", block: station.block, getBlock() { return { typeId: this.block }; } },
         getGameMode() { return this.mode; },
         getComponent(type) {
@@ -70,6 +70,7 @@ function harness() {
     runInNewContext(source + "\nregisterMachineMenus(stations);", {
         ItemStack, ActionFormData, stations: [station],
         GameMode: { Survival: "survival" },
+        PlayerPermissionLevel: { Visitor: 0, Member: 1, Operator: 2, Custom: 3 },
         world: {
             beforeEvents: { playerInteractWithBlock: { subscribe: listener => { beforeInteract = listener; } } },
             afterEvents: { playerLeave: { subscribe: listener => { onLeave = listener; } } }
@@ -83,9 +84,9 @@ function harness() {
     });
     return {
         forms, warnings,
-        click(player, isFirstEvent = true) {
+        click(player, isFirstEvent = true, cancel = false) {
             const event = {
-                player, isFirstEvent, cancel: false,
+                player, isFirstEvent, cancel,
                 block: { typeId: station.block, dimension: player.dimension, location }
             };
             beforeInteract(event);
@@ -124,6 +125,7 @@ test("expiry, leaving, distance, permissions, changed block and invalid choices 
         (qa, who) => { qa.leave(who); },
         (qa, who) => { who.location.x = 20; },
         (qa, who) => { who.mode = "creative"; },
+        (qa, who) => { who.playerPermissionLevel = 0; },
         (qa, who) => { who.dimension.id = "nether"; },
         (qa, who) => { who.dimension.block = "minecraft:air"; }
     ];
@@ -144,6 +146,18 @@ test("expiry, leaving, distance, permissions, changed block and invalid choices 
         await settleForms();
         assert.deepEqual(inventory(who), [[recipe.input.item, 2, false]]);
     }
+});
+
+test("visitors, custom roles and interactions already canceled do not open forms", () => {
+    const qa = harness();
+    const who = player("first");
+    for (const role of [0, 3]) {
+        who.playerPermissionLevel = role;
+        assert.equal(qa.click(who), false);
+    }
+    who.playerPermissionLevel = 1;
+    assert.equal(qa.click(who, true, true), true);
+    assert.equal(qa.forms.length, 0);
 });
 
 test("full inventories, custom materials and a failed slot write preserve the inventory", async () => {

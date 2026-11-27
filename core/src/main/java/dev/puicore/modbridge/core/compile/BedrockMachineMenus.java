@@ -14,19 +14,18 @@ import java.util.UUID;
 /** Mode B の加工メニューを、固定の実行コードと検証済みの宣言データにする。 */
 final class BedrockMachineMenus {
     static final String ENTRY = "scripts/modbridge-machine-menus.js";
-    static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 90);
-    private static final String SCRIPT_API_VERSION = "2.0.0";
+    static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 100);
 
     private BedrockMachineMenus() {}
 
     static List<Map<String, Object>> dependencies() {
-        return List.of(dependency("@minecraft/server"), dependency("@minecraft/server-ui"));
+        return List.of(dependency("@minecraft/server", "2.1.0"), dependency("@minecraft/server-ui", "2.0.0"));
     }
 
-    private static Map<String, Object> dependency(String name) {
+    private static Map<String, Object> dependency(String name, String version) {
         Map<String, Object> dependency = new LinkedHashMap<>();
         dependency.put("module_name", name);
-        dependency.put("version", SCRIPT_API_VERSION);
+        dependency.put("version", version);
         return dependency;
     }
 

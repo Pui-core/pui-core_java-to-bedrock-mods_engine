@@ -539,7 +539,7 @@ class PackCompilerTest {
         assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"block\": \"test:machine\""));
         assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"item\": \"test:ingot\""));
         assertTrue(text(bp, "manifest.json").contains("\"module_name\": \"@minecraft/server-ui\""));
-        assertEquals(List.of(1, 21, 90), result.mapping().behaviorPack().minEngineVersion());
+        assertEquals(List.of(1, 21, 100), result.mapping().behaviorPack().minEngineVersion());
         String key = PackPublisher.cacheKey(ir, settings);
         Path cache = dir.resolve("cache");
         PackPublisher.writeCache(cache, key, result.outputs());

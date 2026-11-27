@@ -1,6 +1,7 @@
 package dev.puicore.modbridge.cli;
 
 import dev.puicore.modbridge.core.Doctor;
+import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.bds.BdsInstaller;
 import dev.puicore.modbridge.core.compile.PackCompiler;
 import dev.puicore.modbridge.core.compile.PackPublisher;
@@ -151,7 +152,7 @@ public final class Main {
                 String a = args.get(i);
                 if (!onlyFiles && a.equals("--")) {
                     onlyFiles = true;
-                } else if (!onlyFiles && List.of("--out", "--runtime", "--cache", "--pack-name", "--pack-id").contains(a)) {
+                } else if (!onlyFiles && List.of("--out", "--runtime", "--cache", "--pack-name", "--pack-id", "--adapter-rules").contains(a)) {
                     if (i + 1 >= args.size()) {
                         err.println(a + " には値が必要");
                         return USAGE;
@@ -168,13 +169,19 @@ public final class Main {
                 }
             }
             if (inputs.isEmpty() || !opts.containsKey("--out")) {
-                err.println("使い方: modbridge compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID]");
+                err.println("使い方: modbridge compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] "
+                        + "[--pack-name NAME] [--pack-id ID] [--adapter-rules FILE]");
                 return USAGE;
             }
             PackCompiler.Settings settings;
             try {
+                AdapterRules rules = opts.containsKey("--adapter-rules")
+                        ? AdapterRules.readDocument(Path.of(opts.get("--adapter-rules"))) : AdapterRules.EMPTY;
                 settings = new PackCompiler.Settings(opts.getOrDefault("--pack-name", PackCompiler.Settings.DEFAULT.packName()),
-                        opts.getOrDefault("--pack-id", PackCompiler.Settings.DEFAULT.packId()));
+                        opts.getOrDefault("--pack-id", PackCompiler.Settings.DEFAULT.packId()), rules);
+            } catch (IOException e) {
+                err.println("アダプタールールを読めない: " + e.getMessage());
+                return IO;
             } catch (IllegalArgumentException e) {
                 err.println(e.getMessage());
                 return USAGE;
@@ -420,7 +427,7 @@ public final class Main {
                   validate <jar|dir>... [--runtime FILE]
                                                   解析して診断だけを表示する
                   report <ir.json>                IR から互換性レポートを表示する
-                  compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID]
+                  compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID] [--adapter-rules FILE]
                                                   Bedrock のアドオン（RP・BP・.mcaddon）と対応表を作り、DIR に公開する
                   bds-install <DIR> --bds BDS [--world NAME] [--apply --confirm-stopped]
                                                   compile の出力を BDS のワールドに配置する（既定は dry-run）

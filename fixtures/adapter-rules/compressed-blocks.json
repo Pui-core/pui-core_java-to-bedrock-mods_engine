@@ -6,7 +6,7 @@
       "id": "modbridge_examples:compressed_blocks",
       "targetMod": "compressed_blocks",
       "versions": ["1.0.3"],
-      "modes": ["A"],
+      "modes": ["A", "B"],
       "menus": [
         {
           "id": "modbridge_examples:compression_bench",

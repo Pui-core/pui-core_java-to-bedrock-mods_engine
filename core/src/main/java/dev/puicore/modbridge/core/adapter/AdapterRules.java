@@ -14,7 +14,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -23,18 +26,42 @@ import java.util.Set;
 public final class AdapterRules {
     private static final String SCHEMA = "modbridge.adapter-rules";
     private static final int MAX_BYTES = 1 << 20;
+    public static final AdapterRules EMPTY = new AdapterRules(List.of(), "");
 
-    private AdapterRules() {}
+    private final List<Adapter> adapters;
+    private final String sha256;
+
+    private AdapterRules(List<Adapter> adapters, String sha256) {
+        this.adapters = adapters;
+        this.sha256 = sha256;
+    }
 
     public static List<Adapter> read(Path path) throws IOException {
+        return readDocument(path).adapters();
+    }
+
+    public List<Adapter> adapters() {
+        return adapters;
+    }
+
+    public String sha256() {
+        return sha256;
+    }
+
+    /** 読み取った内容とキャッシュ用のハッシュを同じスナップショットにまとめる。 */
+    public static AdapterRules readDocument(Path path) throws IOException {
         try (var stream = Files.newInputStream(path)) {
             byte[] data = stream.readNBytes(MAX_BYTES + 1);
             if (data.length > MAX_BYTES) {
                 throw new IOException("アダプタールールは 1 MiB まで");
             }
-            return parse(new String(data, StandardCharsets.UTF_8));
+            List<Adapter> adapters = parse(new String(data, StandardCharsets.UTF_8));
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+            return new AdapterRules(adapters, digest);
         } catch (JsonParseException | IllegalArgumentException | NullPointerException failure) {
             throw new IOException("アダプタールールを読めない: " + failure.getMessage(), failure);
+        } catch (NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
         }
     }
 

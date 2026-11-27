@@ -40,16 +40,13 @@ public final class PackPublisher {
 
     private PackPublisher() {}
 
-    /** アダプターはまだ無い（#7）。将来はアダプターの ID と版をここに入れる。 */
-    static final List<String> ADAPTERS = List.of();
-
     public static String cacheKey(BridgeIr ir, PackCompiler.Settings settings) {
         StringBuilder b = new StringBuilder();
         b.append(PackCompiler.COMPILER_VERSION).append('\n');
         TargetVersions.all().forEach((k, v) -> b.append(k).append('=').append(v).append('\n'));
         b.append("packName=").append(settings.packName()).append('\n');
         b.append("packId=").append(settings.packId()).append('\n');
-        b.append("adapters=").append(ADAPTERS).append('\n');
+        b.append("adapterRules=").append(settings.adapterRules().sha256()).append('\n');
         b.append(IrJson.write(ir));
         return HexFormat.of().formatHex(PackCompiler.sha256().digest(b.toString().getBytes(StandardCharsets.UTF_8)));
     }

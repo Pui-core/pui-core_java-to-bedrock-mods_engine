@@ -103,6 +103,10 @@ public final class AdapterRegistry implements AutoCloseable {
         return Optional.ofNullable(machines.get(block));
     }
 
+    public List<Menu> menus() {
+        return machines.values().stream().distinct().sorted(java.util.Comparator.comparing(Menu::id)).toList();
+    }
+
     @Override
     public void close() {
         if (closed) {

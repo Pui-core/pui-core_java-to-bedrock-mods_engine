@@ -33,6 +33,7 @@ jobs:
         shell: bash
       - run: ./gradlew :cli:run --args=doctor --no-daemon -q
         shell: bash
+      - run: node --test scripts/test-bedrock-machine-menus.mjs
 
   fixture:
     name: fixture MOD と Fabric サーバー用 MOD (Fabric MC 26.3)

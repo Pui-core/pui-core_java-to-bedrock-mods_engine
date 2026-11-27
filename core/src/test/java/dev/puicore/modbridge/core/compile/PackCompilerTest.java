@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.ir.BridgeIr;
 import dev.puicore.modbridge.core.scan.Analyzer;
 import java.awt.image.BufferedImage;
@@ -507,6 +508,57 @@ class PackCompilerTest {
         // Java のコードを持つ MOD は、変換しないことを明示する
         assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("JAVA_LOGIC_NOT_CONVERTED") && d.subject().equals("pmb_fixture")));
         assertEquals(1, mapping(r).notConverted().size());
+    }
+
+    @Test
+    void 対象版の加工ルールからスクリプトと識別子を反映しキャッシュでも復元する() throws IOException {
+        Path fixture = jar("fixture.jar", fixture("pmb_fixture"));
+        List<Path> inputs = List.of(fixture);
+        BridgeIr ir = Analyzer.analyzePaths(inputs);
+        Path ruleFile = dir.resolve("rules.json");
+        String declaration = """
+                {"schema":"modbridge.adapter-rules","schemaVersion":1,"adapters":[{
+                  "id":"test:machine","targetMod":"pmb_fixture","versions":["1.0.0"],"modes":["B"],
+                  "mappings":[{"kind":"BLOCK","source":"pmb_fixture:test_block","destination":"test:machine"},
+                              {"kind":"ITEM","source":"pmb_fixture:test_ingot","destination":"test:ingot"}],
+                  "menus":[{"id":"test:menu","title":"加工台","blocks":["pmb_fixture:test_block"],"maxDistance":5,
+                    "recipes":[{"id":"test:recipe","label":"加工","input":{"item":"minecraft:copper_ingot","count":2},
+                      "output":{"item":"pmb_fixture:test_ingot","count":1}}]}]
+                }]}
+                """;
+        Files.writeString(ruleFile, declaration);
+        var settings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        var result = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), settings);
+        assertTrue(result.ok(), result.diagnostics().toString());
+        var bp = unzip(result.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        assertTrue(bp.containsKey("blocks/test/machine.json"));
+        assertFalse(bp.containsKey("items/test/machine.json"));
+        assertTrue(bp.containsKey("items/test/ingot.json"));
+        assertTrue(text(bp, "recipes/pmb_fixture/test_block.json").contains("\"item\": \"test:ingot\""));
+        assertTrue(text(bp, "recipes/pmb_fixture/test_block.json").contains("\"item\": \"test:machine\""));
+        assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"block\": \"test:machine\""));
+        assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"item\": \"test:ingot\""));
+        assertTrue(text(bp, "manifest.json").contains("\"module_name\": \"@minecraft/server-ui\""));
+        assertEquals(List.of(1, 21, 90), result.mapping().behaviorPack().minEngineVersion());
+        String key = PackPublisher.cacheKey(ir, settings);
+        Path cache = dir.resolve("cache");
+        PackPublisher.writeCache(cache, key, result.outputs());
+        assertEquals(result.mapping(), PackPublisher.readCachedResult(cache, key).mapping());
+
+        Files.writeString(ruleFile, declaration.replace("1.0.0", "0.9.0"));
+        var inactiveSettings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        assertNotEquals(key, PackPublisher.cacheKey(ir, inactiveSettings));
+        var inactive = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), inactiveSettings);
+        assertTrue(inactive.ok(), inactive.diagnostics().toString());
+        assertFalse(unzip(inactive.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE)).containsKey(BedrockMachineMenus.ENTRY));
+
+        Files.writeString(ruleFile, declaration.replace(
+                "\"output\":{\"item\":\"pmb_fixture:test_ingot\"", "\"output\":{\"item\":\"pmb_fixture:missing\""));
+        var invalidSettings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        var invalid = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), invalidSettings);
+        assertFalse(invalid.ok());
+        assertTrue(invalid.outputs().isEmpty());
+        assertTrue(invalid.diagnostics().stream().anyMatch(d -> d.code().equals("ADAPTER_RULES_INVALID")));
     }
 
     @Test

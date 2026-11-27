@@ -84,9 +84,23 @@ cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.2
 
 Fabric の `fabric.mod.json` に `modbridge-adapter` エントリーポイントを登録し、`Adapter` を実装します。運用者が JVM 引数 `-Dmodbridge.adapters.trusted=<提供元MODのID>` で許可した提供元から、対象 MOD の版とモードが一致するものを読み込みます。複数の提供元はカンマで区切ります。
 
-fixture 0.0.4 に含まれる `FixtureMachineAdapter` は、`pmb_fixture` を許可すると `pmb_fixture:test_block` を加工台にします。Bedrock から操作すると、銅インゴット2個を試験用インゴット1個に交換する画面が開きます。応答は30秒以内に1回使えます。加工時に距離、権限、ブロック、材料、出力先の空きを確認します。
+fixture 0.0.4 に含まれる `FixtureMachineAdapter` は、`pmb_fixture` を許可すると `pmb_fixture:test_block` を加工台にします。Bedrock から操作すると、銅インゴット2個を試験用インゴット1個に交換する画面が開きます。応答は30秒以内に1回使えます。加工時に距離、権限、ブロック、材料、出力先の空きを確認し、結果をアクションバーで知らせます。スニーク中は通常どおりブロックを操作できます。
 
 `-Dmodbridge.adapters.rules=<JSONファイル>` では、対象の MOD・版・モードと加工内容を宣言できます。[Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)を指定すると、Bedrock から鍛冶台を操作して丸石9個を圧縮できます。ルールはサーバーの運用者が指定します。
+
+### Mode B の加工ルール
+
+```sh
+modbridge compile pmb-fabric-fixture.jar fabric-api.jar --out build/machine-pack --adapter-rules fixtures/adapter-rules/fixture-mode-b.json
+```
+
+運用者が指定した JSON のうち、入力 JAR の MOD ID・版と Mode B に一致するルールを使います。加工台と材料・結果は Java 側の ID で指定します。任意の `mappings` で、カスタムアイテム・ブロック・レシピの生成先 ID を変更できます。対応するパック定義・レシピ・加工メニューにも変更が反映されます。Bedrock で未変換のカスタム ID を加工で参照すると、コンパイルを中止します。
+
+[Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)は Mode B でも使えます。複数の MOD のルールを使う場合は、1ファイルの `adapters` 配列にまとめます。
+
+加工台を操作すると、ビヘイビアパックのスクリプトがサバイバルのプレイヤーに選択画面を開きます。スニーク中は通常のブロック操作ができます。選択の有効期間は600サーバーティックで、処理結果はアクションバーに出ます。既定のスタックと結合できる材料を使います。必要な個数または出力先が足りなければ、所持品を変更しません。
+
+加工メニューを含むパックは Bedrock 1.21.90 以上と安定版の [`@minecraft/server` と `@minecraft/server-ui` 2.0.0](https://feedback.minecraft.net/hc/en-us/articles/37393460002957-Minecraft-Bedrock-Edition-1-21-90-Chase-the-Skies) を要求します。BDS と純正クライアントでの加工動作は実機確認待ちです。
 
 ## 接続スパイク（Mode A）
 

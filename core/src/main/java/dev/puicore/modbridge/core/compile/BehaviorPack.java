@@ -44,11 +44,12 @@ public final class BehaviorPack {
      * @param rp      リソースパックの変換結果（Java のサブジェクト → 結果）
      * @param recipes レシピの Java 識別子 → レシピの JSON（読めなかったものは null）
      */
-    static Result build(Map<String, PackCompiler.Entry> rp, Map<String, JsonObject> recipes, Map<String, String> recipeSkips) {
+    static Result build(Map<String, PackCompiler.Entry> rp, Map<String, JsonObject> recipes, Map<String, String> recipeSkips,
+            Map<String, String> recipeIdentifiers) {
         Map<String, byte[]> files = new TreeMap<>();
         Map<String, Entry> entries = new TreeMap<>();
         List<Diagnostic> diags = new ArrayList<>();
-        Set<String> available = new TreeSet<>(); // レシピで使える Java の識別子（変換できたアイテムとブロック）
+        Map<String, String> available = new TreeMap<>(); // レシピで使える Java → Bedrock の識別子
 
         for (PackCompiler.Entry e : rp.values()) {
             String subject = e.kind().toLowerCase() + ":" + e.java();
@@ -56,7 +57,7 @@ public final class BehaviorPack {
                 entries.put(subject, new Entry(e.java(), e.kind(), e.bedrock(), "SKIPPED", null, List.of("リソースパックで変換していない")));
                 continue;
             }
-            available.add(e.java());
+            available.put(e.java(), e.bedrock());
             String file = (e.kind().equals("BLOCK") ? "blocks/" : "items/") + e.bedrock().replace(':', '/') + ".json";
             if (e.kind().equals("BLOCK")) {
                 files.put(file, PackCompiler.json(block(e)));
@@ -72,10 +73,10 @@ public final class BehaviorPack {
         }
 
         recipeSkips.forEach((id, reason) -> entries.put("recipe:" + id,
-                new Entry(id, "RECIPE", BedrockIds.identifier(id), "SKIPPED", null, List.of(reason))));
+                new Entry(id, "RECIPE", PackCompiler.bedrockId(recipeIdentifiers, id), "SKIPPED", null, List.of(reason))));
         for (var r : new TreeMap<>(recipes).entrySet()) {
             String subject = "recipe:" + r.getKey();
-            String bid = BedrockIds.identifier(r.getKey());
+            String bid = PackCompiler.bedrockId(recipeIdentifiers, r.getKey());
             Recipe converted = r.getValue() == null ? Recipe.fail("レシピの JSON を読めない") : recipe(bid, r.getValue(), available);
             if (converted.json == null) {
                 diags.add(new Diagnostic(Severity.WARN, "RECIPE_UNSUPPORTED", r.getKey(), converted.reason));
@@ -156,7 +157,7 @@ public final class BehaviorPack {
         }
     }
 
-    private static Recipe recipe(String bid, JsonObject r, Set<String> available) {
+    private static Recipe recipe(String bid, JsonObject r, Map<String, String> available) {
         String type = str(r.get("type"));
         List<String> notes = new ArrayList<>();
         Set<String> vanilla = new TreeSet<>();
@@ -232,12 +233,12 @@ public final class BehaviorPack {
     }
 
     /** 材料を Bedrock の識別子にする。タグ・複数候補・変換していないアイテムは null。 */
-    private static String ingredient(JsonElement e, Set<String> available, Set<String> vanilla) {
+    private static String ingredient(JsonElement e, Map<String, String> available, Set<String> vanilla) {
         String id = e instanceof JsonObject o ? str(o.get("item")) : str(e);
         return itemId(id, available, vanilla);
     }
 
-    private static Map<String, Object> result(JsonElement e, Set<String> available, Set<String> vanilla) {
+    private static Map<String, Object> result(JsonElement e, Map<String, String> available, Set<String> vanilla) {
         if (!(e instanceof JsonObject o)) {
             return null;
         }
@@ -258,7 +259,7 @@ public final class BehaviorPack {
         return m;
     }
 
-    private static String itemId(String id, Set<String> available, Set<String> vanilla) {
+    private static String itemId(String id, Map<String, String> available, Set<String> vanilla) {
         if (id == null || id.startsWith("#")) {
             return null;
         }
@@ -270,7 +271,7 @@ public final class BehaviorPack {
             vanilla.add(n);
             return n;
         }
-        return available.contains(n) ? BedrockIds.identifier(n) : null;
+        return available.get(n);
     }
 
     private static String str(JsonElement e) {

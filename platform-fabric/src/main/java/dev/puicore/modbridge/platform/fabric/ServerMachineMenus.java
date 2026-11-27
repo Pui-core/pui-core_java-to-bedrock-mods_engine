@@ -87,7 +87,7 @@ final class ServerMachineMenus {
     }
 
     private InteractionResult open(ServerPlayer player, BlockPos pos) {
-        if (adapters == null) {
+        if (adapters == null || player.isShiftKeyDown()) {
             return InteractionResult.PASS;
         }
         var level = player.level();
@@ -129,7 +129,7 @@ final class ServerMachineMenus {
         if (result == Result.STALE) {
             return;
         }
-        current.sendSystemMessage(Component.literal(switch (result) {
+        current.sendOverlayMessage(Component.literal(switch (result) {
             case APPLIED -> "加工しました";
             case INPUT_MISSING -> "加工に必要な材料が足りません";
             case OUTPUT_FULL -> "加工結果を入れる空きがありません";

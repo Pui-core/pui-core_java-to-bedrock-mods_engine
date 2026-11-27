@@ -1,0 +1,28 @@
+{
+  "schema": "modbridge.adapter-rules",
+  "schemaVersion": 1,
+  "adapters": [
+    {
+      "id": "pmb_fixture:machines",
+      "targetMod": "pmb_fixture",
+      "versions": ["0.0.4"],
+      "modes": ["B"],
+      "menus": [
+        {
+          "id": "pmb_fixture:test_machine",
+          "title": "試験用加工台",
+          "blocks": ["pmb_fixture:test_block"],
+          "maxDistance": 5,
+          "recipes": [
+            {
+              "id": "pmb_fixture:copper_to_ingot",
+              "label": "銅インゴット2個を加工",
+              "input": {"item": "minecraft:copper_ingot", "count": 2},
+              "output": {"item": "pmb_fixture:test_ingot", "count": 1}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

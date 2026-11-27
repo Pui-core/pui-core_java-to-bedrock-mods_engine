@@ -3,7 +3,7 @@
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
 > **現在の状態: v0.0.1 → v0.1.0 開発中**
-> 実機で検証済みの変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、リソースパック生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+> 実機で検証済みの変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
 
 ## 対応モード
 
@@ -40,20 +40,21 @@ JAR は展開せず、コードも実行しません（静的解析）。コー�
 
 `modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり（読めない JAR、JAR が 1 つも無い場合を含む）または不正な IR、`2`=使い方の誤り、`3`=IR の書き出しと IR ファイルの読込の失敗です。
 
-## リソースパックの生成（Mode B 向け、試作）
+## アドオンの生成（Mode B 向け、試作）
 
 ```sh
-modbridge compile mods/ --out build/pack --cache .modbridge-cache   # build/pack/modbridge-rp.mcpack と mapping.json
+modbridge compile mods/ --out build/pack --cache .modbridge-cache
+# build/pack/ に modbridge-rp.mcpack（見た目）、modbridge-bp.mcpack（定義）、modbridge.mcaddon（両方）、mapping.json（対応表）
 ```
 
-単純なモデル（平面アイテム、立方体のブロック）だけを変換し、それ以外は理由を付けて対応表（`mapping.json`）で SKIPPED にします。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。実機での見え方は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) にあります。
+単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。BDS・実機での動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
 
 ## fixture MOD
 
-`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
+`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` と、レシピ 2 つ（インゴット 9 個 ⇔ ブロック）を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
 
 ```sh
-cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.2.jar
+cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.3.jar
 ```
 
 ## Fabric サーバー用 MOD（Mode A）

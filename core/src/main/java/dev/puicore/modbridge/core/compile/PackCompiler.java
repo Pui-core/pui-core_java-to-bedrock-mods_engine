@@ -54,13 +54,17 @@ public final class PackCompiler {
     public static final String MAPPING_SCHEMA = "modbridge.mapping";
     public static final int MAPPING_SCHEMA_VERSION = 1;
     public static final String PACK_FILE = "modbridge-rp.mcpack";
+    public static final String BEHAVIOR_PACK_FILE = "modbridge-bp.mcpack";
+    public static final String ADDON_FILE = "modbridge.mcaddon";
     public static final String MAPPING_FILE = "mapping.json";
+    /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
+    public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/1";
+    static final String COMPILER_VERSION = "pack-compiler/2";
     static final long MAX_PACK_BYTES = 256L << 20;
     static final int MAX_TEXTURES = 16_384;
-    /** パックが要求する Bedrock の最低版。実機で未検証の暫定値（ADR-0004）。 */
-    static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 0);
+    /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
+    static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 80);
     private static final Pattern PACK_ID = Pattern.compile("[a-z0-9_.-]{1,64}");
     private static final Pattern LANG = Pattern.compile("assets/([^/]+)/lang/([a-z]{2,3})_([a-z]{2,3})\\.json");
     /** Bedrock が持つ言語（texts/languages.json に書けるもの）。 */
@@ -85,8 +89,13 @@ public final class PackCompiler {
 
     // ---- 対応表（mapping.json） ----
 
+    /**
+     * @param behaviorPack ビヘイビアパックの情報
+     * @param behavior     ビヘイビアパックでの変換結果
+     * @param notConverted 変換しない Java のロジック（MOD ごとの entrypoint・Mixin）。黙って欠落させないために記録する
+     */
     public record Mapping(String schema, int schemaVersion, String generator, PackInfo pack, List<Entry> entries,
-            List<Texture> textures) {}
+            List<Texture> textures, PackInfo behaviorPack, List<BehaviorPack.Entry> behavior, List<String> notConverted) {}
 
     public record PackInfo(String name, String headerUuid, String moduleUuid, List<Integer> version, List<Integer> minEngineVersion,
             String contentSha256) {}
@@ -132,6 +141,9 @@ public final class PackCompiler {
             return fail();
         }
         List<Definition> targets = ir.definitions().stream().filter(d -> d.kind() == Kind.ITEM || d.kind() == Kind.BLOCK).toList();
+        Map<String, JsonObject> recipes = new TreeMap<>();
+        Map<String, Map<String, Integer>> unconvertedContent = new TreeMap<>(); // MOD → 変換しないカテゴリ → ファイル数
+        Map<String, String> recipeSkips = new TreeMap<>();
 
         // Bedrock 識別子の衝突（アイテムとブロックは同じ名前空間。同じ Java ID のアイテムとブロックはブロックアイテムなので可）
         Map<String, Set<String>> byBedrock = new TreeMap<>();
@@ -139,6 +151,15 @@ public final class PackCompiler {
         byBedrock.forEach((bid, javaIds) -> {
             if (javaIds.size() > 1) {
                 diag(Severity.ERROR, "ID_COLLISION", bid, "別々の Java 識別子が同じ Bedrock 識別子になる: " + String.join(", ", javaIds));
+            }
+        });
+        // レシピの識別子の衝突（レシピはアイテム・ブロックとは別の名前空間）
+        Map<String, Set<String>> recipeIds = new TreeMap<>();
+        ir.definitions().stream().filter(d -> d.kind() == Kind.RECIPE)
+                .forEach(d -> recipeIds.computeIfAbsent(BedrockIds.identifier(d.id()), k -> new TreeSet<>()).add(d.id()));
+        recipeIds.forEach((bid, javaIds) -> {
+            if (javaIds.size() > 1) {
+                diag(Severity.ERROR, "ID_COLLISION", bid, "別々の Java のレシピが同じ Bedrock 識別子になる: " + String.join(", ", javaIds));
             }
         });
         if (!diags.isEmpty()) {
@@ -160,7 +181,10 @@ public final class PackCompiler {
         Map<String, Map<String, String>> lang = new TreeMap<>(); // Bedrock の言語 → キー → 値
 
         Map<String, List<Definition>> byMod = new TreeMap<>();
-        targets.forEach(d -> byMod.computeIfAbsent(d.modId(), k -> new ArrayList<>()).add(d));
+        // 定義を持たない MOD（データだけの MOD など）も開き、変換しないデータを報告する
+        ir.mods().forEach(m -> byMod.computeIfAbsent(m.id(), k -> new ArrayList<>()));
+        ir.definitions().stream().filter(d -> d.kind() != null)
+                .forEach(d -> byMod.computeIfAbsent(d.modId(), k -> new ArrayList<>()).add(d));
         for (var modEntry : byMod.entrySet()) {
             String file = modFile.get(modEntry.getKey());
             Path path = file == null ? null : jars.get(file);
@@ -174,6 +198,10 @@ public final class PackCompiler {
                 return fail();
             }
             Set<String> needed = neededPngs(new ModelResolver(meta), modEntry.getValue());
+            unconvertedContent.put(modEntry.getKey(), unconvertedCategories(meta));
+            if (modEntry.getValue().isEmpty()) {
+                continue;
+            }
             SafeArchive jar = open(path, file, sha.get(file), needed::contains);
             if (jar == null) {
                 return fail();
@@ -185,6 +213,14 @@ public final class PackCompiler {
                 String subject = d.kind().name().toLowerCase() + ":" + d.id();
                 String bid = BedrockIds.identifier(d.id());
                 String skip = skipReason(d, modeB.get(subject));
+                if (d.kind() == Kind.RECIPE) {
+                    if (skip != null) {
+                        recipeSkips.put(d.id(), skip);
+                    } else {
+                        recipes.put(d.id(), recipeJson(jar, d));
+                    }
+                    continue;
+                }
                 if (skip != null) {
                     entries.put(subject, skipped(d, bid, skip));
                     continue;
@@ -235,18 +271,62 @@ public final class PackCompiler {
         UUID module = UUID.nameUUIDFromBytes(("modbridge:rp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         // 内容が変わったら版も変える（Bedrock は UUID と版で取得済みのパックを使い回すため）。単調増加ではない
         List<Integer> version = List.of(1, 0, Integer.parseUnsignedInt(contentSha.substring(0, 7), 16));
-        files.put("manifest.json", json(manifest(header, module, version)));
+        files.put("manifest.json", json(manifest(header, module, version, "resources", settings.packName())));
 
         byte[] pack = zip(files);
         if (pack.length > MAX_PACK_BYTES) {
             diag(Severity.ERROR, "PACK_LIMIT_EXCEEDED", "-", "パックが大きすぎる（" + pack.length + " バイト、上限 " + MAX_PACK_BYTES + "）");
             return fail();
         }
+        // ---- ビヘイビアパック ----
+        BehaviorPack.Result bp = BehaviorPack.build(entries, recipes, recipeSkips);
+        diags.addAll(bp.diagnostics());
+        List<String> notConverted = new ArrayList<>();
+        unconvertedContent.forEach((mod, cats) -> {
+            if (cats.isEmpty()) {
+                return;
+            }
+            List<String> parts = new ArrayList<>();
+            cats.forEach((c, n) -> parts.add(c + " " + n));
+            notConverted.add(mod + ": " + String.join("、", parts));
+            diag(Severity.WARN, "DATA_NOT_CONVERTED", mod, "変換しないデータ・素材がある（カテゴリ ファイル数）: " + String.join("、", parts));
+        });
+        for (var m : ir.mods()) {
+            if (!m.entrypoints().isEmpty() || !m.mixinConfigs().isEmpty()) {
+                String what = m.id() + ": entrypoint " + m.entrypoints().size() + " 個・Mixin 設定 " + m.mixinConfigs().size() + " 個";
+                notConverted.add(what);
+                diag(Severity.WARN, "JAVA_LOGIC_NOT_CONVERTED", m.id(),
+                        "Java のコード（entrypoint " + m.entrypoints().size() + " 個・Mixin 設定 " + m.mixinConfigs().size()
+                                + " 個）は Mode B に変換しない。宣言データ（素材・レシピ）だけを変換する");
+            }
+        }
+        Map<String, byte[]> bpFiles = new TreeMap<>(bp.files());
+        String bpSha = contentHash(withDependency(bpFiles, header.toString(), version));
+        UUID bpHeader = UUID.nameUUIDFromBytes(("modbridge:bp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
+        UUID bpModule = UUID.nameUUIDFromBytes(("modbridge:bp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
+        List<Integer> bpVersion = List.of(1, 0, Integer.parseUnsignedInt(bpSha.substring(0, 7), 16));
+        Map<String, Object> bpManifest = manifest(bpHeader, bpModule, bpVersion, "data", settings.packName() + " (behavior)");
+        // Map.of は要素が 2 つ以上だと反復の順序が実行ごとに変わりうるので、順序を固定する
+        Map<String, Object> dependency = new LinkedHashMap<>();
+        dependency.put("uuid", header.toString());
+        dependency.put("version", version);
+        bpManifest.put("dependencies", List.of(dependency));
+        bpFiles.put("manifest.json", json(bpManifest));
+        byte[] bpPack = zip(bpFiles);
+        if (bpPack.length > MAX_PACK_BYTES) {
+            diag(Severity.ERROR, "PACK_LIMIT_EXCEEDED", "-", "ビヘイビアパックが大きすぎる（" + bpPack.length + " バイト）");
+            return fail();
+        }
+
         Mapping mapping = new Mapping(MAPPING_SCHEMA, MAPPING_SCHEMA_VERSION, "modbridge " + TargetVersions.get("modbridge"),
                 new PackInfo(settings.packName(), header.toString(), module.toString(), version, MIN_ENGINE_VERSION, contentSha),
-                List.copyOf(entries.values()), List.copyOf(textures.values()));
+                List.copyOf(entries.values()), List.copyOf(textures.values()),
+                new PackInfo(settings.packName() + " (behavior)", bpHeader.toString(), bpModule.toString(), bpVersion, MIN_ENGINE_VERSION, bpSha),
+                bp.entries(), List.copyOf(notConverted));
         Map<String, byte[]> outputs = new LinkedHashMap<>();
         outputs.put(PACK_FILE, pack);
+        outputs.put(BEHAVIOR_PACK_FILE, bpPack);
+        outputs.put(ADDON_FILE, addon(pack, bpPack));
         outputs.put(MAPPING_FILE, (GSON.toJson(mapping) + "\n").getBytes(StandardCharsets.UTF_8));
         return new Result(true, List.copyOf(diags), outputs, mapping);
     }
@@ -271,6 +351,9 @@ public final class PackCompiler {
     private static Set<String> neededPngs(ModelResolver resolver, List<Definition> defs) {
         Set<String> out = new TreeSet<>();
         for (Definition d : defs) {
+            if (d.kind() == Kind.RECIPE) {
+                continue;
+            }
             ModelResolver.Resolved r = d.kind() == Kind.BLOCK ? resolver.block(d.id()) : resolver.item(d.id());
             if (r.ok()) {
                 r.textures().values().stream().filter(id -> !id.startsWith("minecraft:")).forEach(id -> out.add(pngName(id)));
@@ -490,15 +573,37 @@ public final class PackCompiler {
         return root;
     }
 
-    private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version) {
+    /** .mcaddon（2 つの .mcpack をまとめた ZIP）。Bedrock で開くと両方を読み込む。 */
+    static byte[] addon(byte[] rp, byte[] bp) {
+        Map<String, byte[]> m = new TreeMap<>();
+        m.put(PACK_FILE, rp);
+        m.put(BEHAVIOR_PACK_FILE, bp);
+        return zip(m);
+    }
+
+    private static JsonObject recipeJson(SafeArchive jar, Definition d) {
+        for (String ev : d.evidence()) {
+            byte[] b = jar.text(ev);
+            if (b != null) {
+                try {
+                    return JsonParser.parseString(new String(b, StandardCharsets.UTF_8)) instanceof JsonObject o ? o : null;
+                } catch (JsonParseException e) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version, String moduleType, String name) {
         Map<String, Object> h = new LinkedHashMap<>();
-        h.put("name", settings.packName());
+        h.put("name", name);
         h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（Java " + TargetVersions.get("minecraft") + " の MOD から）");
         h.put("uuid", header.toString());
         h.put("version", version);
         h.put("min_engine_version", MIN_ENGINE_VERSION);
         Map<String, Object> mod = new LinkedHashMap<>();
-        mod.put("type", "resources");
+        mod.put("type", moduleType);
         mod.put("uuid", module.toString());
         mod.put("version", version);
         Map<String, Object> root = new LinkedHashMap<>();
@@ -508,7 +613,7 @@ public final class PackCompiler {
         return root;
     }
 
-    private static byte[] json(Object o) {
+    static byte[] json(Object o) {
         return (GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
     }
 
@@ -516,19 +621,94 @@ public final class PackCompiler {
      * パックと対応表が対応しているか（対応表の {@code pack.contentSha256} が、パックの中身から計算した値と一致するか）。
      * キャッシュの検証に使う。読めないものは不一致とする。
      */
-    static boolean consistent(byte[] pack, byte[] mappingJson) {
-        if (pack.length > MAX_PACK_BYTES) {
+    static boolean consistent(Map<String, byte[]> outputs) {
+        try {
+            return checkConsistent(outputs);
+        } catch (RuntimeException e) {
+            return false; // 型の違う manifest など。読めないものは不一致とする
+        }
+    }
+
+    private static boolean checkConsistent(Map<String, byte[]> outputs) {
+        byte[] rp = outputs.get(PACK_FILE);
+        byte[] bp = outputs.get(BEHAVIOR_PACK_FILE);
+        byte[] addon = outputs.get(ADDON_FILE);
+        byte[] mappingJson = outputs.get(MAPPING_FILE);
+        if (rp == null || bp == null || addon == null || mappingJson == null) {
             return false;
         }
-        String expected;
+        Mapping m;
         try {
-            Mapping m = GSON.fromJson(new String(mappingJson, StandardCharsets.UTF_8), Mapping.class);
-            expected = m == null || m.pack() == null ? null : m.pack().contentSha256();
+            m = GSON.fromJson(new String(mappingJson, StandardCharsets.UTF_8), Mapping.class);
         } catch (RuntimeException e) {
             return false;
         }
-        if (expected == null) {
+        if (m == null || m.pack() == null || m.behaviorPack() == null || m.behavior() == null || m.entries() == null) {
             return false;
+        }
+        Map<String, byte[]> rpFiles = unzipBounded(rp);
+        Map<String, byte[]> bpFiles = unzipBounded(bp);
+        if (rpFiles == null || bpFiles == null || !java.util.Arrays.equals(addon, addon(rp, bp))) {
+            return false;
+        }
+        JsonObject rpManifest = parseObject(rpFiles.remove("manifest.json"));
+        JsonObject bpManifest = parseObject(bpFiles.remove("manifest.json"));
+        if (!headerMatches(rpManifest, m.pack()) || !headerMatches(bpManifest, m.behaviorPack())) {
+            return false;
+        }
+        // BP の依存先は RP のヘッダー
+        if (!(bpManifest.get("dependencies") instanceof com.google.gson.JsonArray deps) || deps.size() != 1
+                || !(deps.get(0) instanceof JsonObject dep)
+                || !m.pack().headerUuid().equals(dep.has("uuid") ? dep.get("uuid").getAsString() : null)
+                || !GSON.toJsonTree(m.pack().version()).equals(dep.get("version"))) {
+            return false;
+        }
+        // 対応表の BP のファイルと、BP の中身が一致する
+        Set<String> listed = new TreeSet<>();
+        m.behavior().forEach(e -> {
+            if (e.file() != null) {
+                listed.add(e.file());
+            }
+        });
+        if (!listed.equals(bpFiles.keySet())) {
+            return false;
+        }
+        return contentHash(rpFiles).equals(m.pack().contentSha256())
+                && contentHash(withDependency(bpFiles, m.pack().headerUuid(), m.pack().version())).equals(m.behaviorPack().contentSha256());
+    }
+
+    private static boolean headerMatches(JsonObject manifest, PackInfo info) {
+        if (manifest == null || !(manifest.get("header") instanceof JsonObject h) || !h.has("uuid")) {
+            return false;
+        }
+        return info.headerUuid().equals(h.get("uuid").getAsString()) && GSON.toJsonTree(info.version()).equals(h.get("version"));
+    }
+
+    private static JsonObject parseObject(byte[] b) {
+        if (b == null) {
+            return null;
+        }
+        try {
+            return JsonParser.parseString(new String(b, StandardCharsets.UTF_8)) instanceof JsonObject o ? o : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * BP の内容のハッシュに、RP への依存（UUID と版）も含める。RP が変われば BP の版も変わり、
+     * Bedrock が古い依存先の BP を取得済みとして使い回さないようにする。
+     */
+    static Map<String, byte[]> withDependency(Map<String, byte[]> files, String rpUuid, List<Integer> rpVersion) {
+        Map<String, byte[]> m = new TreeMap<>(files);
+        m.put("\0dependency", (rpUuid + " " + rpVersion).getBytes(StandardCharsets.UTF_8));
+        return m;
+    }
+
+    /** 上限付きで展開する。壊れている・大きすぎる・名前が重複するなら null。 */
+    private static Map<String, byte[]> unzipBounded(byte[] pack) {
+        if (pack.length > MAX_PACK_BYTES) {
+            return null;
         }
         Map<String, byte[]> files = new TreeMap<>();
         long total = 0;
@@ -538,16 +718,35 @@ public final class PackCompiler {
                 byte[] b = in.readNBytes((int) Math.min(MAX_PACK_BYTES - total + 1, Integer.MAX_VALUE - 8));
                 total += b.length;
                 if (total > MAX_PACK_BYTES || files.put(e.getName(), b) != null) {
-                    return false;
+                    return null;
                 }
             }
         } catch (IOException | IllegalArgumentException e) {
-            return false;
+            return null;
         }
-        if (files.remove("manifest.json") == null) {
-            return false;
+        return files;
+    }
+
+    /**
+     * 変換しないデータ・素材のカテゴリとファイル数。data/ はレシピ以外のすべて（タグ・ルートテーブル・worldgen など）、
+     * assets/ はモデル・テクスチャ・blockstate・アイテム定義・言語以外（音・パーティクル・シェーダーなど）。
+     */
+    static Map<String, Integer> unconvertedCategories(SafeArchive jar) {
+        Set<String> convertedAssets = Set.of("models", "textures", "blockstates", "items", "lang");
+        Map<String, Integer> out = new TreeMap<>();
+        for (String name : jar.names()) {
+            String[] p = name.split("/", 4);
+            if (p.length < 3) {
+                continue;
+            }
+            // 名前空間の直下のファイル（assets/<ns>/sounds.json など）は、ファイル名をカテゴリにする
+            if (p[0].equals("data") && !p[2].equals("recipe") && !p[2].equals("recipes")) {
+                out.merge("data/" + p[1] + "/" + p[2], 1, Integer::sum);
+            } else if (p[0].equals("assets") && !convertedAssets.contains(p[2])) {
+                out.merge("assets/" + p[1] + "/" + p[2], 1, Integer::sum);
+            }
         }
-        return contentHash(files).equals(expected);
+        return out;
     }
 
     /** パスと内容のハッシュから、パック全体の内容のハッシュを作る（manifest は含めない）。 */

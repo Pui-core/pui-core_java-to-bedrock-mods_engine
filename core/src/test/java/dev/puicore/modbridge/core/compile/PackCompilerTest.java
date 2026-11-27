@@ -82,7 +82,8 @@ class PackCompilerTest {
     /** fixture と同じ構成（アイテム 1、ブロック 1 とそのアイテム、言語 2 つ）。 */
     static Map<String, byte[]> fixture(String ns) throws IOException {
         Map<String, byte[]> m = new LinkedHashMap<>();
-        m.put("fabric.mod.json", u("{\"schemaVersion\":1,\"id\":\"" + ns + "\",\"version\":\"1.0.0\",\"depends\":{\"minecraft\":\"~26.3\"}}"));
+        m.put("fabric.mod.json", u("{\"schemaVersion\":1,\"id\":\"" + ns + "\",\"version\":\"1.0.0\",\"depends\":{\"minecraft\":\"~26.3\"},"
+                + "\"entrypoints\":{\"main\":[\"x.FixtureMod\"]}}"));
         m.put("assets/" + ns + "/items/test_ingot.json", u("{\"model\":{\"type\":\"minecraft:model\",\"model\":\"" + ns + ":item/test_ingot\"}}"));
         m.put("assets/" + ns + "/items/test_block.json", u("{\"model\":{\"type\":\"minecraft:model\",\"model\":\"" + ns + ":block/test_block\"}}"));
         m.put("assets/" + ns + "/models/item/test_ingot.json", u("{\"parent\":\"minecraft:item/generated\",\"textures\":{\"layer0\":\"" + ns + ":item/test_ingot\"}}"));
@@ -93,6 +94,10 @@ class PackCompilerTest {
         m.put("assets/" + ns + "/lang/en_us.json", u("{\"item." + ns + ".test_ingot\":\"Test Ingot\",\"block." + ns + ".test_block\":\"Test Block\"}"));
         m.put("assets/" + ns + "/lang/ja_jp.json", u("{\"item." + ns + ".test_ingot\":\"テストインゴット\",\"block." + ns + ".test_block\":\"テストブロック\"}"));
         m.put("assets/" + ns + "/lang/xx_zz.json", u("{\"item." + ns + ".test_ingot\":\"?\"}"));
+        m.put("data/" + ns + "/recipe/test_block.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"###\",\"###\",\"###\"],"
+                + "\"key\":{\"#\":\"" + ns + ":test_ingot\"},\"result\":{\"id\":\"" + ns + ":test_block\",\"count\":1}}"));
+        m.put("data/" + ns + "/recipe/test_ingot_from_block.json", u("{\"type\":\"minecraft:crafting_shapeless\","
+                + "\"ingredients\":[\"" + ns + ":test_block\"],\"result\":{\"id\":\"" + ns + ":test_ingot\",\"count\":9}}"));
         return m;
     }
 
@@ -286,8 +291,8 @@ class PackCompilerTest {
         Path g = jar("o/f.jar", other);
         PackCompiler.Result r2 = compile(List.of(g));
         Map<String, byte[]> mixed = new LinkedHashMap<>();
+        mixed.putAll(r.outputs());
         mixed.put(PackCompiler.PACK_FILE, r2.outputs().get(PackCompiler.PACK_FILE));
-        mixed.put(PackCompiler.MAPPING_FILE, r.outputs().get(PackCompiler.MAPPING_FILE));
         PackPublisher.writeCache(cache, key, mixed);
         assertNull(PackPublisher.readCache(cache, key), "パックと対応表の内容のハッシュが合わない");
         PackPublisher.writeCache(cache, key, r.outputs());
@@ -361,6 +366,137 @@ class PackCompilerTest {
         var e = assertThrows(Png.PngException.class, () -> Png.inspect(head));
         assertTrue(e.getMessage().contains("上限"));
         assertThrows(Png.PngException.class, () -> Png.inspect(u("not a png at all, definitely not a png")));
+    }
+
+    // ---- ビヘイビアパック（Mode B） ----
+
+    private static PackCompiler.Mapping mapping(PackCompiler.Result r) {
+        return r.mapping();
+    }
+
+    private static dev.puicore.modbridge.core.compile.BehaviorPack.Entry bpEntry(PackCompiler.Result r, String kind, String id) {
+        return mapping(r).behavior().stream().filter(e -> e.kind().equals(kind) && e.java().equals(id)).findFirst().orElseThrow();
+    }
+
+    @Test
+    void ビヘイビアパックにアイテム_ブロック_レシピを作り_mcaddonにまとめる() throws IOException {
+        PackCompiler.Result r = compile(List.of(jar("fixture.jar", fixture("pmb_fixture"))));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        Map<String, byte[]> bp = unzip(r.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        String item = text(bp, "items/pmb_fixture/test_ingot.json");
+        assertTrue(item.contains("\"identifier\": \"pmb_fixture:test_ingot\""), item);
+        assertTrue(item.contains("\"default\": \"pmb_fixture:item_test_ingot\""), item);
+        String block = text(bp, "blocks/pmb_fixture/test_block.json");
+        assertTrue(block.contains("\"minecraft:geometry\": \"minecraft:geometry.full_block\""), block);
+        assertTrue(block.contains("\"*\": {"), block);
+        assertTrue(block.contains("\"render_method\": \"opaque\""), block);
+        assertFalse(bp.containsKey("items/pmb_fixture/test_block.json"), "ブロックアイテムはファイルを作らない");
+        String shaped = text(bp, "recipes/pmb_fixture/test_block.json");
+        assertTrue(shaped.contains("minecraft:recipe_shaped") && shaped.contains("\"item\": \"pmb_fixture:test_ingot\""), shaped);
+        String shapeless = text(bp, "recipes/pmb_fixture/test_ingot_from_block.json");
+        assertTrue(shapeless.contains("minecraft:recipe_shapeless") && shapeless.contains("\"count\": 9"), shapeless);
+        assertEquals("GENERATED", bpEntry(r, "RECIPE", "pmb_fixture:test_block").status());
+        assertEquals("PARTIAL", bpEntry(r, "ITEM", "pmb_fixture:test_ingot").status(), "コードで決まる性質は変換しない");
+        assertTrue(bpEntry(r, "BLOCK", "pmb_fixture:test_block").notes().get(0).contains("コードで決まる"));
+
+        // ビヘイビアパックはリソースパックに依存する
+        String manifest = text(bp, "manifest.json");
+        assertTrue(manifest.contains("\"type\": \"data\""), manifest);
+        assertTrue(manifest.contains(mapping(r).pack().headerUuid()), "依存先はリソースパックのヘッダー");
+        assertNotEquals(mapping(r).pack().headerUuid(), mapping(r).behaviorPack().headerUuid());
+
+        Map<String, byte[]> addon = unzip(r.outputs().get(PackCompiler.ADDON_FILE));
+        assertEquals(List.of(PackCompiler.BEHAVIOR_PACK_FILE, PackCompiler.PACK_FILE), List.copyOf(addon.keySet()));
+        assertArrayEquals(r.outputs().get(PackCompiler.PACK_FILE), addon.get(PackCompiler.PACK_FILE));
+
+        // Java のコードを持つ MOD は、変換しないことを明示する
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("JAVA_LOGIC_NOT_CONVERTED") && d.subject().equals("pmb_fixture")));
+        assertEquals(1, mapping(r).notConverted().size());
+    }
+
+    @Test
+    void 変換できないレシピは理由を付けて外し_バニラのIDは注記する() throws IOException {
+        Map<String, byte[]> m = fixture("rec");
+        m.put("data/rec/recipe/tagged.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"#c:ingots\"],"
+                + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
+        m.put("data/rec/recipe/smelt.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"rec:test_block\","
+                + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
+        m.put("data/rec/recipe/vanilla.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"minecraft:iron_ingot\","
+                + "\"rec:test_ingot\"],\"result\":{\"id\":\"rec:test_block\"}}"));
+        m.put("data/rec/recipe/unknown_result.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"rec:test_ingot\"],"
+                + "\"result\":{\"id\":\"rec:not_converted\"}}"));
+        PackCompiler.Result r = compile(List.of(jar("rec.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:tagged").status());
+        assertTrue(bpEntry(r, "RECIPE", "rec:tagged").notes().get(0).contains("タグ"));
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:unknown_result").status());
+        assertEquals("PARTIAL", bpEntry(r, "RECIPE", "rec:vanilla").status());
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("VANILLA_ID_ASSUMED") && d.subject().equals("rec:vanilla")));
+        assertTrue(r.diagnostics().stream().filter(d -> d.code().equals("RECIPE_UNSUPPORTED")).count() >= 3);
+    }
+
+    @Test
+    void レシピの識別子が衝突したら何も作らない() throws IOException {
+        Map<String, byte[]> m = fixture("rc");
+        byte[] recipe = m.get("data/rc/recipe/test_ingot_from_block.json");
+        m.put("data/rc/recipe/a/b.json", recipe);
+        m.put("data/rc/recipe/a_b.json", recipe);
+        PackCompiler.Result r = compile(List.of(jar("rc.jar", m)));
+        assertFalse(r.ok());
+        assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("ID_COLLISION") && d.subject().equals("rc:a_b")),
+                r.diagnostics().toString());
+    }
+
+    @Test
+    void patternとkeyが対応しない定形レシピは外す() throws IOException {
+        Map<String, byte[]> m = fixture("pk");
+        m.put("data/pk/recipe/undefined_char.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"XX\",\"X \"],"
+                + "\"key\":{\"#\":\"pk:test_ingot\"},\"result\":{\"id\":\"pk:test_block\"}}"));
+        m.put("data/pk/recipe/unused_key.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"##\"],"
+                + "\"key\":{\"#\":\"pk:test_ingot\",\"X\":\"pk:test_block\"},\"result\":{\"id\":\"pk:test_block\"}}"));
+        PackCompiler.Result r = compile(List.of(jar("pk.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "pk:undefined_char").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "pk:unused_key").status());
+    }
+
+    @Test
+    void 変換しないデータと素材のカテゴリを報告する() throws IOException {
+        Map<String, byte[]> m = fixture("dn");
+        m.put("data/dn/worldgen/configured_feature/ore.json", u("{}"));
+        m.put("data/dn/loot_table/blocks/test_block.json", u("{}"));
+        m.put("data/minecraft/tags/block/mineable/pickaxe.json", u("{\"values\":[\"dn:test_block\"]}"));
+        m.put("assets/dn/sounds.json", u("{}"));
+        m.put("assets/dn/sounds/hit.ogg", u("ogg"));
+        PackCompiler.Result r = compile(List.of(jar("dn.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        var d = r.diagnostics().stream().filter(x -> x.code().equals("DATA_NOT_CONVERTED")).findFirst().orElseThrow();
+        assertTrue(d.message().contains("data/dn/worldgen 1"), d.message());
+        assertTrue(d.message().contains("data/dn/loot_table 1"), d.message());
+        assertTrue(d.message().contains("data/minecraft/tags 1"), d.message());
+        assertTrue(d.message().contains("assets/dn/sounds 1"), d.message());
+        assertTrue(d.message().contains("assets/dn/sounds.json 1"), "名前空間の直下のファイルも数える: " + d.message());
+        assertFalse(d.message().contains("recipe"), "レシピは変換するので数えない");
+        assertTrue(mapping(r).notConverted().stream().anyMatch(s -> s.startsWith("dn: ") && s.contains("worldgen")));
+    }
+
+    @Test
+    void 対応表が書き換えられたキャッシュは使わない() throws IOException {
+        Path f = jar("f.jar", fixture("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(f));
+        String key = PackPublisher.cacheKey(ir, PackCompiler.Settings.DEFAULT);
+        PackCompiler.Result r = PackCompiler.compile(ir, Map.of("f.jar", f), PackCompiler.Settings.DEFAULT);
+        Path cache = dir.resolve("cache");
+        String json = new String(r.outputs().get(PackCompiler.MAPPING_FILE), StandardCharsets.UTF_8);
+        Map<String, byte[]> tampered = new LinkedHashMap<>(r.outputs());
+        tampered.put(PackCompiler.MAPPING_FILE, json.replaceFirst("\"behavior\": \\[[\\s\\S]*?\\n  \\]", "\"behavior\": []")
+                .getBytes(StandardCharsets.UTF_8));
+        assertNotEquals(json, new String(tampered.get(PackCompiler.MAPPING_FILE), StandardCharsets.UTF_8));
+        PackPublisher.writeCache(cache, key, tampered);
+        assertNull(PackPublisher.readCache(cache, key), "BP のファイルと対応表が合わない");
+        PackPublisher.writeCache(cache, key, r.outputs());
+        assertTrue(PackPublisher.readCache(cache, key) != null);
     }
 
     @Test

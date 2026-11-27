@@ -60,7 +60,7 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/3";
+    static final String COMPILER_VERSION = "pack-compiler/4";
     static final long MAX_PACK_BYTES = 256L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
@@ -93,9 +93,16 @@ public final class PackCompiler {
      * @param behaviorPack ビヘイビアパックの情報
      * @param behavior     ビヘイビアパックでの変換結果
      * @param notConverted 変換しない Java のロジック（MOD ごとの entrypoint・Mixin）。黙って欠落させないために記録する
+     * @param diagnostics  パック生成時の診断
      */
     public record Mapping(String schema, int schemaVersion, String generator, PackInfo pack, List<Entry> entries,
-            List<Texture> textures, PackInfo behaviorPack, List<BehaviorPack.Entry> behavior, List<String> notConverted) {}
+            List<Texture> textures, PackInfo behaviorPack, List<BehaviorPack.Entry> behavior, List<String> notConverted,
+            List<Diagnostic> diagnostics) {
+        public Mapping(String schema, int schemaVersion, String generator, PackInfo pack, List<Entry> entries,
+                List<Texture> textures, PackInfo behaviorPack, List<BehaviorPack.Entry> behavior, List<String> notConverted) {
+            this(schema, schemaVersion, generator, pack, entries, textures, behaviorPack, behavior, notConverted, List.of());
+        }
+    }
 
     public record PackInfo(String name, String headerUuid, String moduleUuid, List<Integer> version, List<Integer> minEngineVersion,
             String contentSha256) {}
@@ -321,13 +328,13 @@ public final class PackCompiler {
                 new PackInfo(settings.packName(), header.toString(), module.toString(), version, MIN_ENGINE_VERSION, contentSha),
                 List.copyOf(entries.values()), List.copyOf(textures.values()),
                 new PackInfo(settings.packName() + " (behavior)", bpHeader.toString(), bpModule.toString(), bpVersion, MIN_ENGINE_VERSION, bpSha),
-                bp.entries(), List.copyOf(notConverted));
+                bp.entries(), List.copyOf(notConverted), List.copyOf(diags));
         Map<String, byte[]> outputs = new LinkedHashMap<>();
         outputs.put(PACK_FILE, pack);
         outputs.put(BEHAVIOR_PACK_FILE, bpPack);
         outputs.put(ADDON_FILE, addon(pack, bpPack));
         outputs.put(MAPPING_FILE, (GSON.toJson(mapping) + "\n").getBytes(StandardCharsets.UTF_8));
-        return new Result(true, List.copyOf(diags), outputs, mapping);
+        return new Result(true, mapping.diagnostics(), outputs, mapping);
     }
 
     /** Bedrock で読み込める成分の範囲に収めつつ、内容ハッシュの先頭 28 ビットを保持する。 */
@@ -624,32 +631,34 @@ public final class PackCompiler {
     }
 
     /**
-     * パックと対応表が対応しているか（対応表の {@code pack.contentSha256} が、パックの中身から計算した値と一致するか）。
-     * キャッシュの検証に使う。読めないものは不一致とする。
+     * パックと対応表を照合し、診断を含む生成結果を復元する。読み取れないキャッシュは作り直す。
      */
-    static boolean consistent(Map<String, byte[]> outputs) {
+    static Result restoreCachedResult(Map<String, byte[]> outputs) {
         try {
-            return checkConsistent(outputs);
+            Mapping mapping = GSON.fromJson(new String(outputs.get(MAPPING_FILE), StandardCharsets.UTF_8), Mapping.class);
+            if (mapping == null || !MAPPING_SCHEMA.equals(mapping.schema()) || mapping.schemaVersion() != MAPPING_SCHEMA_VERSION
+                    || mapping.pack() == null || mapping.behaviorPack() == null || mapping.behavior() == null || mapping.entries() == null
+                    || mapping.diagnostics() == null) {
+                return null;
+            }
+            if (mapping.diagnostics().stream().anyMatch(d -> d == null || d.severity() == null || d.severity() == Severity.ERROR
+                    || d.code() == null || d.subject() == null || d.message() == null)
+                    || mapping.entries().stream().anyMatch(e -> e == null || e.status() == null)
+                    || mapping.behavior().stream().anyMatch(e -> e == null || e.kind() == null || e.status() == null)
+                    || !checkConsistent(outputs, mapping)) {
+                return null;
+            }
+            return new Result(true, List.copyOf(mapping.diagnostics()), outputs, mapping);
         } catch (RuntimeException e) {
-            return false; // 型の違う manifest など。読めないものは不一致とする
+            return null; // 型の違う manifest など
         }
     }
 
-    private static boolean checkConsistent(Map<String, byte[]> outputs) {
+    private static boolean checkConsistent(Map<String, byte[]> outputs, Mapping m) {
         byte[] rp = outputs.get(PACK_FILE);
         byte[] bp = outputs.get(BEHAVIOR_PACK_FILE);
         byte[] addon = outputs.get(ADDON_FILE);
-        byte[] mappingJson = outputs.get(MAPPING_FILE);
-        if (rp == null || bp == null || addon == null || mappingJson == null) {
-            return false;
-        }
-        Mapping m;
-        try {
-            m = GSON.fromJson(new String(mappingJson, StandardCharsets.UTF_8), Mapping.class);
-        } catch (RuntimeException e) {
-            return false;
-        }
-        if (m == null || m.pack() == null || m.behaviorPack() == null || m.behavior() == null || m.entries() == null) {
+        if (rp == null || bp == null || addon == null) {
             return false;
         }
         Map<String, byte[]> rpFiles = unzipBounded(rp);

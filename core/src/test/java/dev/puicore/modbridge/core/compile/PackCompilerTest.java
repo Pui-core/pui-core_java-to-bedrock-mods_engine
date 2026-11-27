@@ -305,6 +305,13 @@ class PackCompilerTest {
         mixed.put(PackCompiler.PACK_FILE, r2.outputs().get(PackCompiler.PACK_FILE));
         PackPublisher.writeCache(cache, key, mixed);
         assertNull(PackPublisher.readCache(cache, key), "パックと対応表の内容のハッシュが合わない");
+        var legacy = new LinkedHashMap<>(r.outputs());
+        var mapping = com.google.gson.JsonParser.parseString(
+                new String(legacy.get(PackCompiler.MAPPING_FILE), StandardCharsets.UTF_8)).getAsJsonObject();
+        mapping.remove("diagnostics");
+        legacy.put(PackCompiler.MAPPING_FILE, PackCompiler.json(mapping));
+        PackPublisher.writeCache(cache, key, legacy);
+        assertNull(PackPublisher.readCachedResult(cache, key), "診断を持たない旧キャッシュは作り直す");
         PackPublisher.writeCache(cache, key, r.outputs());
         assertTrue(PackPublisher.readCache(cache, key) != null);
     }

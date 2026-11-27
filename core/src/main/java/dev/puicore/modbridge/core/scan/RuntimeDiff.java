@@ -39,18 +39,28 @@ final class RuntimeDiff {
     static List<Definition> merge(List<ModDescriptor> mods, List<Definition> defs, RuntimeRegistry rt, List<Diagnostic> diags) {
         String target = TargetVersions.get("minecraft");
         if (!rt.minecraft().equals(target)) {
-            diags.add(new Diagnostic(Severity.WARN, "RUNTIME_MINECRAFT_MISMATCH", rt.fileName(),
+            // 別の版のデータとは、突き合わせの結果を信用できない（fail closed）
+            diags.add(new Diagnostic(Severity.ERROR, "RUNTIME_MINECRAFT_MISMATCH", rt.fileName(),
                     "実行時レジストリは Minecraft " + rt.minecraft() + " で取得されている（本エンジンの対象は " + target + "）"));
         }
 
         // 実行時に読み込まれていない MOD（静的にだけある定義の判定から外す）
         Set<String> notLoaded = new TreeSet<>();
         for (ModDescriptor m : mods) {
-            if (!rt.mods().containsKey(m.id())) {
+            String loaded = rt.mods().get(m.id());
+            if (loaded == null) {
                 notLoaded.add(m.id());
                 diags.add(new Diagnostic(Severity.WARN, "MOD_NOT_LOADED", m.id(),
                         "実行時レジストリの取得時に読み込まれていない（入力と取得環境の MOD が違う）"));
+            } else if (!loaded.equals(m.version())) {
+                // 別の版の JAR と突き合わせている。結果を信用できないので、その MOD を fail closed にする
+                diags.add(new Diagnostic(Severity.ERROR, "MOD_VERSION_MISMATCH", m.id(),
+                        "入力の版 " + m.version() + " と、取得時の版 " + loaded + " が違う"));
             }
+        }
+        if (!mods.isEmpty() && notLoaded.size() == mods.size()) {
+            diags.add(new Diagnostic(Severity.ERROR, "RUNTIME_REGISTRY_UNRELATED", rt.fileName(),
+                    "入力した MOD が 1 つも取得時に読み込まれていない（別の環境の実行時レジストリ）"));
         }
 
         // 名前空間 → その名前空間を担当する MOD
@@ -82,8 +92,9 @@ final class RuntimeDiff {
             } else {
                 added.add(new Definition(e.id(), kind, modId, Source.RUNTIME_REGISTRY, List.of("runtime:" + e.registry()), List.of(),
                         Map.of(RUNTIME_ATTR, REGISTERED)));
-                diags.add(new Diagnostic(Severity.WARN, "CODE_ONLY_DEFINITION", e.id(),
-                        kind + " がコードでだけ登録されている（素材ファイルから推定できなかった）。Bedrock 側の見た目を生成できない"));
+                diags.add(new Diagnostic(Severity.WARN, "CODE_ONLY_DEFINITION", e.id(), kind == Kind.RECIPE
+                        ? "RECIPE がコードでだけ登録されている（レシピ JSON が無い）。Mode B では変換できない"
+                        : kind + " がコードでだけ登録されている（素材ファイルから推定できなかった）。Bedrock 側の見た目を生成できない"));
             }
         }
         outside.forEach((ns, n) -> diags.add(new Diagnostic(Severity.INFO, "RUNTIME_OUTSIDE_INPUT", ns,

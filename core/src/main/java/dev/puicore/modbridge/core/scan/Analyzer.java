@@ -263,11 +263,15 @@ public final class Analyzer {
             String note = warns.isEmpty() ? "" : "（警告: " + String.join(", ", warns) + "）";
             if (d.source() == Source.RUNTIME_REGISTRY) {
                 // 素材が無い定義。Mode A の実測では、Geyser はカスタムアイテムとして登録したが、
-                // Hydraulic は「パスが見つからない」としてスキップした（ADR-0003）
-                plans.add(new FeaturePlan(subject, Mode.A, Method.AUTO, Status.UNTESTED, d.kind() == Kind.RECIPE
-                        ? "Java サーバーがレシピを処理する"
-                        : "Geyser が登録するが、素材が無いため Hydraulic は見た目を変換しない（コードでだけ登録）"));
-                plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.UNTESTED, "素材・定義ファイルが無いため生成できない（コードでだけ登録）"));
+                // Hydraulic は「パスが見つからない」としてスキップした（ADR-0003）。見た目は対応付け（ADAPTER）で補う必要がある
+                if (d.kind() == Kind.RECIPE) {
+                    plans.add(new FeaturePlan(subject, Mode.A, Method.AUTO, Status.UNTESTED, "Java サーバーがレシピを処理する" + note));
+                } else {
+                    plans.add(new FeaturePlan(subject, Mode.A, Method.ADAPTER, Status.UNTESTED,
+                            "Geyser は登録するが、素材が無いため Hydraulic は見た目を変換しない。見た目の対応付けが要る" + note));
+                }
+                plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.UNTESTED,
+                        "素材・定義ファイルが無いため生成できない（コードでだけ登録）" + note));
                 continue;
             }
             switch (d.kind()) {

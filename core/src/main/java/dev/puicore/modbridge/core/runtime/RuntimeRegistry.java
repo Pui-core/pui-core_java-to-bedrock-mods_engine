@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -82,16 +83,23 @@ public record RuntimeRegistry(String fileName, String sha256, long size, String 
             if (id == null || version == null) {
                 throw new IllegalArgumentException("実行時レジストリの mods[] が不正");
             }
-            mods.put(id, version);
+            if (mods.put(id, version) != null) {
+                throw new IllegalArgumentException("実行時レジストリの mods[] が重複している: " + id);
+            }
         }
         List<Entry> entries = new ArrayList<>();
+        Set<Entry> unique = new HashSet<>();
         for (JsonElement e : array(o, "entries")) {
             String registry = e instanceof JsonObject eo ? string(eo.get("registry")) : null;
             String id = e instanceof JsonObject eo ? string(eo.get("id")) : null;
             if (registry == null || !REGISTRIES.contains(registry) || id == null || !IDENTIFIER.matcher(id).matches()) {
                 throw new IllegalArgumentException("実行時レジストリの entries[] が不正: " + registry + " " + id);
             }
-            entries.add(new Entry(registry, id));
+            Entry entry = new Entry(registry, id);
+            if (!unique.add(entry)) {
+                throw new IllegalArgumentException("実行時レジストリの entries[] が重複している: " + registry + " " + id);
+            }
+            entries.add(entry);
         }
         entries.sort((a, b) -> a.registry().equals(b.registry()) ? a.id().compareTo(b.id()) : a.registry().compareTo(b.registry()));
         return new RuntimeRegistry(fileName, sha256, size, minecraft, java.util.Collections.unmodifiableMap(mods), List.copyOf(entries));

@@ -72,7 +72,7 @@ Epic #1 の横断ルールは「解析 → IR → 方式決定 → モード別�
   - `-Dmodbridge.registryDump.stop=true` で、書き出した後にサーバーを止める。
   - 出力は決定的にする（ソート済み、時刻・パスなし）。`minecraft` 名前空間は含めない。読み込まれていた MOD の ID と版（同梱 JAR の MOD を含む）も記録する。
   - 書き出しに失敗してもサーバーは止めない。呼出し側はファイルが無いことで検出する（スパイクのスクリプトは失敗として扱う）。
-- **読込**（`RuntimeRegistry.read`）: 64 MiB まで。スキーマ・版・各欄の型、`registry`（item / block / recipe）、識別子の形式を検証し、不正なら `RUNTIME_REGISTRY_INVALID`（ERROR）。読めなければ `IO_ERROR`（ERROR）。ファイルは `inputs` に SHA-256 付きで記録する。
+- **読込**（`RuntimeRegistry.read`）: 64 MiB まで。スキーマ・版・各欄の型、`registry`（item / block / recipe）、識別子の形式、`mods` と `entries` の重複を検証し、不正なら `RUNTIME_REGISTRY_INVALID`（ERROR）。読めなければ `IO_ERROR`（ERROR）。ファイルは `inputs` に SHA-256 付きで記録する。
 - **突き合わせ**（`RuntimeDiff`、CLI は `scan` / `validate` の `--runtime FILE`）:
 
   | 状況 | 結果 |
@@ -81,15 +81,17 @@ Epic #1 の横断ルールは「解析 → IR → 方式決定 → モード別�
   | 実行時にだけある | `RUNTIME_REGISTRY` の定義として追加し、`CODE_ONLY_DEFINITION`（WARN） |
   | 静的にだけある | `STATIC_ONLY`（WARN。名前の違い、条件付き登録、削除された定義など） |
   | 入力した MOD が取得時に読み込まれていない | `MOD_NOT_LOADED`（WARN）。その MOD は `STATIC_ONLY` の判定から外す |
+  | 入力した MOD が 1 つも取得時に読み込まれていない | `RUNTIME_REGISTRY_UNRELATED`（ERROR。突き合わせが成り立たないため） |
+  | 入力と取得時で MOD の版が違う | `MOD_VERSION_MISMATCH`（ERROR。その MOD を fail closed にする） |
   | 入力していない MOD の名前空間の登録 | 名前空間ごとの件数だけを `RUNTIME_OUTSIDE_INPUT`（INFO）で示す。一部の MOD だけを解析したときに誤検知を出さないため |
-  | 取得したサーバーの Minecraft の版が対象と違う | `RUNTIME_MINECRAFT_MISMATCH`（WARN） |
+  | 取得したサーバーの Minecraft の版が対象と違う | `RUNTIME_MINECRAFT_MISMATCH`（ERROR。別の版のデータとは結果を信用できないため） |
 
   対象にする名前空間は、入力した MOD の ID と、入力した MOD の定義が使う名前空間だけ。
-- **方式の計画**: 実行時にだけある定義は、Mode A を `AUTO`（Geyser が登録する。見た目は変換されない）、Mode B を `UNSUPPORTED`（生成元の素材が無い）にする。状態は UNTESTED のまま。
+- **方式の計画**: 実行時にだけあるアイテム・ブロックは、Mode A を `ADAPTER`（Geyser は登録するが見た目は変換されないので、対応付けが要る）、Mode B を `UNSUPPORTED`（生成元の素材が無い）にする。実行時にだけあるレシピは、Mode A を `AUTO`（サーバーが処理する）にする。状態は UNTESTED のまま。
 
 ## 実測（2026-11-27）
 
-- 単体テスト 41 件が成功（`./gradlew build` の集計）。対象は壊れた JAR、ZIP Slip、ZIP 爆弾（圧縮率・上限）、重複 MOD ID、重複定義、依存の欠落と循環とその伝播、`provides`、同梱 JAR の MOD ID と展開量の上限、実行時レジストリとの突き合わせ（実行時のみ・静的のみ・未読込の MOD・入力外の名前空間・版の違い・不正な形式）、素材の欠落、NeoForge・メタデータなし、オブジェクトでない・型の違う `fabric.mod.json`、JAR が 0 件、同名の入力、診断に絶対パスを含まないこと、不正な IR の拒否、IR の往復、CLI の終了コード、原子的書き出しの成功と失敗。
+- 単体テスト 42 件が成功（`./gradlew build` の集計）。対象は壊れた JAR、ZIP Slip、ZIP 爆弾（圧縮率・上限）、重複 MOD ID、重複定義、依存の欠落と循環とその伝播、`provides`、同梱 JAR の MOD ID と展開量の上限、実行時レジストリとの突き合わせ（実行時のみ・静的のみ・未読込の MOD・無関係なレジストリ・MOD と Minecraft の版の違い・重複・不正な形式）、素材の欠落、NeoForge・メタデータなし、オブジェクトでない・型の違う `fabric.mod.json`、JAR が 0 件、同名の入力、診断に絶対パスを含まないこと、不正な IR の拒否、IR の往復、CLI の終了コード、原子的書き出しの成功と失敗。
 - 実際の fixture JAR（`pmb-fabric-fixture-0.0.1.jar`）から、ITEM 2、BLOCK 1 を推定した。fixture を単体で指定すると、`fabric-api` が入力に無いため `DEPENDENCY_MISSING` になり、fail closed になる。これは想定どおりの動作である。
 - スパイク環境の `mods/` 一式（Fabric API、Geyser、Hydraulic、fixture）では、ERROR 0 件・WARN 0 件で解析できた。Fabric API は同梱 JAR 44 個から MOD ID 45 個（`fabric-api-base` などのモジュール）を取り出した。
 - 実行時レジストリ: fixture に素材を持たないアイテム `pmb_fixture:code_only_marker` を足し、スパイクのサーバーで取得した。

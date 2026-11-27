@@ -378,7 +378,7 @@ class AnalyzerTest {
         return p;
     }
 
-    private static final String LOADED = "{\"id\":\"pmb_fixture\",\"version\":\"0.0.2\"},{\"id\":\"other\",\"version\":\"1\"}";
+    private static final String LOADED = "{\"id\":\"pmb_fixture\",\"version\":\"1.0.0\"},{\"id\":\"other\",\"version\":\"1\"}";
 
     @Test
     void 実行時にだけある定義と静的にだけある定義を検出する() throws IOException {
@@ -396,7 +396,8 @@ class AnalyzerTest {
         assertEquals(BridgeIr.Source.RUNTIME_REGISTRY, def.source());
         assertEquals("pmb_fixture", def.modId());
         assertTrue(ir.plans().stream().filter(p -> p.subject().equals("item:pmb_fixture:code_only_marker"))
-                .allMatch(p -> p.status() == Status.UNTESTED && (p.mode() == Mode.A || p.method() == Method.UNSUPPORTED)));
+                .allMatch(p -> p.status() == Status.UNTESTED
+                        && p.method() == (p.mode() == Mode.A ? Method.ADAPTER : Method.UNSUPPORTED)), ir.plans().toString());
 
         var staticOnly = codes(ir, "STATIC_ONLY");
         assertEquals(1, staticOnly.size(), staticOnly.toString());
@@ -426,7 +427,19 @@ class AnalyzerTest {
         BridgeIr ir = Analyzer.analyzePaths(List.of(jar), runtime("rt.json", "26.2", "{\"id\":\"other\",\"version\":\"1\"}"));
         assertEquals(1, codes(ir, "MOD_NOT_LOADED").size());
         assertTrue(codes(ir, "STATIC_ONLY").isEmpty());
-        assertEquals(1, codes(ir, "RUNTIME_MINECRAFT_MISMATCH").size());
+        assertEquals(Severity.ERROR, codes(ir, "RUNTIME_MINECRAFT_MISMATCH").get(0).severity());
+        // 入力した MOD が 1 つも読み込まれていない実行時レジストリは、突き合わせとして成り立たない
+        assertEquals(Severity.ERROR, codes(ir, "RUNTIME_REGISTRY_UNRELATED").get(0).severity());
+    }
+
+    @Test
+    void 入力と取得時でMODの版が違えばそのMODはfail_closed() throws IOException {
+        Path jar = jar("fixture.jar", fixtureEntries("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(jar),
+                runtime("rt.json", "26.3", "{\"id\":\"pmb_fixture\",\"version\":\"9.9\"}", "item pmb_fixture:test_ingot"));
+        assertEquals(1, codes(ir, "MOD_VERSION_MISMATCH").size());
+        assertTrue(ir.plans().stream().filter(p -> p.subject().equals("mod:pmb_fixture")).allMatch(p -> p.status() == Status.ERROR));
+        assertTrue(codes(ir, "RUNTIME_REGISTRY_UNRELATED").isEmpty());
     }
 
     @Test
@@ -435,7 +448,9 @@ class AnalyzerTest {
         for (String bad : List.of("[]", "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":2}",
                 "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[],\"entries\":[{\"registry\":\"entity\",\"id\":\"a:b\"}]}",
                 "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[],\"entries\":[{\"registry\":\"item\",\"id\":\"A B\"}]}",
-                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":{},\"entries\":[]}")) {
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":{},\"entries\":[]}",
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[],\"entries\":[{\"registry\":\"item\",\"id\":\"m:b\"},{\"registry\":\"item\",\"id\":\"m:b\"}]}",
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[{\"id\":\"m\",\"version\":\"1\"},{\"id\":\"m\",\"version\":\"2\"}],\"entries\":[]}")) {
             Path rt = dir.resolve("bad-rt.json");
             Files.writeString(rt, bad);
             BridgeIr ir = Analyzer.analyzePaths(List.of(jar), rt);

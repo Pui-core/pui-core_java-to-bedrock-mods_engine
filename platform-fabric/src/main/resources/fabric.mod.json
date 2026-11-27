@@ -3,13 +3,14 @@
 	"id": "modbridge",
 	"version": "${version}",
 	"name": "PuiModBridge (Fabric)",
-	"description": "Mode A（Java サーバー + Geyser）用。Bedrock の接続ゲート（-Dmodbridge.gate、既定 strict）と、実行時レジストリの取得（-Dmodbridge.registryDump=<file>）。",
+	"description": "Mode A（Java サーバー + Geyser）用。起動時の互換性検査（-Dmodbridge.gate、既定 strict）と、実行時レジストリの取得（-Dmodbridge.registryDump=<file>）。",
 	"authors": ["Pui-core"],
 	"license": "LicenseRef-Undecided",
 	"environment": "server",
 	"entrypoints": {
 		"server": ["dev.puicore.modbridge.platform.fabric.ModBridgeFabric"]
 	},
+	"mixins": ["modbridge.mixins.json"],
 	"depends": {
 		"fabricloader": ">=0.20.1",
 		"minecraft": "~26.3",

@@ -14,7 +14,7 @@ import java.util.Locale;
 /**
  * Mode A の接続ゲート。サーバーの MOD 構成を解析した IR から、Bedrock の接続を受け付けるかを決める。
  *
- * <p>重大な非対応があるとき、Bedrock の接続を断る（ワールドは変更しない）。Java の接続には関わらない。
+ * <p>重大な非対応があるとき、strict の呼び出し元はこの判定を使ってサーバーの起動を中断する。
  *
  * <ul>
  *   <li>{@link Policy#STRICT}（既定）: 重大な非対応があれば断る</li>
@@ -46,7 +46,7 @@ public final class ConnectionGate {
     }
 
     /**
-     * 判定。{@code allowBedrock} が false なら、Bedrock の接続を {@code message} で断る。
+     * 判定。{@code allowBedrock} が false なら、呼び出し元は起動を中断するか、接続を {@code message} で断る。
      *
      * @param reasons 重大な非対応（最大 {@link #MAX_REASONS} 件。{@code total} が全件数）
      */
@@ -91,7 +91,7 @@ public final class ConnectionGate {
             return new Decision(true, policy, shown, total, "");
         }
         return new Decision(false, policy, shown, total,
-                "このサーバーには Bedrock 版で使えない MOD があります（" + total + " 件）。Java 版で接続してください"
+                "このサーバーには Bedrock 版で使えない MOD があります（" + total + " 件）"
                         + "（This server has mods not supported on Bedrock Edition）");
     }
 }

@@ -17,10 +17,10 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
-import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.item.crafting.RecipeManager;
 
 /**
- * 実行時レジストリの取得。サーバーの起動完了後に、MOD が実際に登録したアイテム・ブロック・レシピを JSON にする。
+ * 実行時レジストリの取得。MOD が登録したアイテム・ブロックと、読み込まれたレシピを JSON にする。
  * 呼び出すのは {@link ModBridgeFabric}。
  *
  * <ul>
@@ -48,12 +48,12 @@ final class RegistryDump {
         }
     }
 
-    static String toJson(MinecraftServer server) {
+    static String toJson(RecipeManager recipeManager) {
         Map<String, Set<String>> entries = new TreeMap<>();
         entries.put("block", ids(BuiltInRegistries.BLOCK.keySet()));
         entries.put("item", ids(BuiltInRegistries.ITEM.keySet()));
         Set<String> recipes = new TreeSet<>();
-        server.getRecipeManager().getRecipes().forEach(h -> add(recipes, h.id().identifier()));
+        recipeManager.getRecipes().forEach(h -> add(recipes, h.id().identifier()));
         entries.put("recipe", recipes);
 
         JsonObject root = new JsonObject();

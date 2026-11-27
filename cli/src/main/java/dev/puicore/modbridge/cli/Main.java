@@ -1,6 +1,7 @@
 package dev.puicore.modbridge.cli;
 
 import dev.puicore.modbridge.core.Doctor;
+import dev.puicore.modbridge.core.bds.BdsInstaller;
 import dev.puicore.modbridge.core.compile.PackCompiler;
 import dev.puicore.modbridge.core.compile.PackPublisher;
 import dev.puicore.modbridge.core.TargetVersions;
@@ -63,6 +64,8 @@ public final class Main {
             case "validate" -> scan(rest, out, err, false);
             case "report" -> report(rest, out, err);
             case "compile" -> compile(rest, out, err);
+            case "bds-install" -> bdsInstall(rest, out, err);
+            case "bds-rollback" -> bdsRollback(rest, out, err);
             default -> {
                 err.println("不明なコマンド: " + args[0]);
                 usage(err);
@@ -228,6 +231,88 @@ public final class Main {
         }
     }
 
+    /** 引数を「--名前 値」と「--フラグ」と位置引数に分ける。未知のオプションや重複は null。 */
+    private static Map<String, String> options(List<String> args, List<String> valued, List<String> flags, List<String> positional,
+            PrintStream err) {
+        Map<String, String> opts = new TreeMap<>();
+        for (int i = 0; i < args.size(); i++) {
+            String a = args.get(i);
+            if (valued.contains(a)) {
+                if (i + 1 >= args.size()) {
+                    err.println(a + " には値が必要");
+                    return null;
+                }
+                if (opts.put(a, args.get(++i)) != null) {
+                    err.println(a + " は 1 回だけ指定する");
+                    return null;
+                }
+            } else if (flags.contains(a)) {
+                opts.put(a, "true");
+            } else if (a.startsWith("-")) {
+                err.println("不明なオプション: " + a);
+                return null;
+            } else {
+                positional.add(a);
+            }
+        }
+        return opts;
+    }
+
+    /** bds-install: 既定は dry-run（計画の表示だけ）。--apply で配置する（--confirm-stopped が要る）。 */
+    private static int bdsInstall(List<String> args, PrintStream out, PrintStream err) {
+        List<String> pos = new ArrayList<>();
+        Map<String, String> o = options(args, List.of("--bds", "--world"), List.of("--apply", "--confirm-stopped"), pos, err);
+        if (o == null || pos.size() != 1 || !o.containsKey("--bds")) {
+            err.println("使い方: modbridge bds-install <compile の出力フォルダー> --bds DIR [--world NAME] [--apply --confirm-stopped]");
+            return USAGE;
+        }
+        try {
+            Path bds = Path.of(o.get("--bds"));
+            Path packs = Path.of(pos.get(0));
+            BdsInstaller.Plan plan = BdsInstaller.plan(bds, packs, o.get("--world"));
+            out.println("## 配置の計画（ワールド: " + plan.world() + "）");
+            plan.actions().forEach(a -> out.println("- " + a.type() + " " + a.target() + ": " + a.detail()));
+            plan.problems().forEach(p -> out.println("[ERROR] " + p));
+            if (!plan.ok()) {
+                return FAILED;
+            }
+            if (!o.containsKey("--apply")) {
+                out.println("dry-run なので何も変更していない。配置するには、BDS を止めてから --apply --confirm-stopped を付ける");
+                return OK;
+            }
+            String id = BdsInstaller.apply(bds, packs, o.get("--world"), o.containsKey("--confirm-stopped"));
+            out.println("配置した。バックアップ: " + BdsInstaller.BACKUP_DIR + "/" + id + "（戻すには modbridge bds-rollback --bds DIR --backup " + id
+                    + " --confirm-stopped）");
+            return OK;
+        } catch (BdsInstaller.InstallException e) {
+            err.println(e.getMessage());
+            return FAILED;
+        } catch (InvalidPathException e) {
+            err.println("パスとして使えない: " + e.getInput());
+            return USAGE;
+        }
+    }
+
+    private static int bdsRollback(List<String> args, PrintStream out, PrintStream err) {
+        List<String> pos = new ArrayList<>();
+        Map<String, String> o = options(args, List.of("--bds", "--backup"), List.of("--confirm-stopped"), pos, err);
+        if (o == null || !pos.isEmpty() || !o.containsKey("--bds") || !o.containsKey("--backup")) {
+            err.println("使い方: modbridge bds-rollback --bds DIR --backup ID --confirm-stopped");
+            return USAGE;
+        }
+        try {
+            BdsInstaller.rollback(Path.of(o.get("--bds")), o.get("--backup"), o.containsKey("--confirm-stopped"));
+            out.println("バックアップ " + o.get("--backup") + " から元に戻した");
+            return OK;
+        } catch (BdsInstaller.InstallException e) {
+            err.println(e.getMessage());
+            return FAILED;
+        } catch (InvalidPathException e) {
+            err.println("パスとして使えない: " + e.getInput());
+            return USAGE;
+        }
+    }
+
     private static int report(List<String> args, PrintStream out, PrintStream err) {
         if (args.size() != 1) {
             err.println("使い方: modbridge report <ir.json>");
@@ -334,7 +419,11 @@ public final class Main {
                                                   解析して診断だけを表示する
                   report <ir.json>                IR から互換性レポートを表示する
                   compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID]
-                                                  Bedrock のリソースパック（.mcpack）と対応表を作り、DIR に公開する
+                                                  Bedrock のアドオン（RP・BP・.mcaddon）と対応表を作り、DIR に公開する
+                  bds-install <DIR> --bds BDS [--world NAME] [--apply --confirm-stopped]
+                                                  compile の出力を BDS のワールドに配置する（既定は dry-run）
+                  bds-rollback --bds BDS --backup ID --confirm-stopped
+                                                  bds-install のバックアップから元に戻す
                   （-- の後ろは「-」で始まる名前もファイルとして扱う）
                 終了コード: 0=成功, 1=ERROR 診断あり（読めない JAR を含む）・不正な IR,
                           2=使い方の誤り, 3=IR の書き出し・IR ファイルの読込の失敗

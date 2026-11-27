@@ -338,7 +338,7 @@ public final class SafeArchive {
         return message.replace(path.toAbsolutePath().toString(), name).replace(path.toString(), name);
     }
 
-    static void checkName(String name) throws ArchiveException {
+    public static void checkName(String name) throws ArchiveException {
         if (name.isEmpty() || name.indexOf('\0') >= 0 || name.indexOf('\\') >= 0 || name.startsWith("/")
                 || DRIVE.matcher(name).matches()) {
             throw new ArchiveException("UNSAFE_PATH", "危険なエントリー名: " + printable(name));

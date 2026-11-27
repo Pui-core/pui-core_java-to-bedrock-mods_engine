@@ -33,6 +33,8 @@ def fetchGeyserApi = tasks.register('fetchGeyserApi') {
 			def part = new File(dir, 'Geyser-Fabric.jar.part')
 			def conn = new URL(geyserUrl).openConnection()
 			conn.setRequestProperty('User-Agent', 'modbridge-build')
+			conn.connectTimeout = 30_000
+			conn.readTimeout = 120_000
 			conn.inputStream.withStream { part.bytes = it.bytes }
 			if (sha(part) != geyserSha) {
 				part.delete()

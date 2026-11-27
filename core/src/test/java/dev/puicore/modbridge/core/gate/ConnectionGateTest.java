@@ -67,6 +67,13 @@ class ConnectionGateTest {
     }
 
     @Test
+    void 解析の対象外から読み込まれたMODも理由にする() {
+        Decision d = ConnectionGate.decide(ir(List.of(), List.of(OK_A)), Policy.STRICT, List.of("MOD_NOT_ANALYZED x"));
+        assertFalse(d.allowBedrock());
+        assertEquals(List.of("MOD_NOT_ANALYZED x"), d.reasons());
+    }
+
+    @Test
     void 理由の表示は上限で切る() {
         List<Diagnostic> many = new ArrayList<>();
         for (int i = 0; i < 50; i++) {

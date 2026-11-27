@@ -133,6 +133,9 @@ echo "[spike] 起動: ログ → $LOG"
 } | redact > "$LOG"
 
 JAVA_OPTS=(-Xmx2G -Duser.language=en -Duser.country=US -Dfile.encoding=UTF-8 "-Dmodbridge.spike=$STAMP")
+# 試験用に JVM 引数を足す（例: SPIKE_EXTRA_JAVA_OPTS="-Dfabric.addMods=/path/to/mod.jar"）。空白で区切る
+# shellcheck disable=SC2206
+[[ -n "${SPIKE_EXTRA_JAVA_OPTS:-}" ]] && JAVA_OPTS+=(${SPIKE_EXTRA_JAVA_OPTS})
 [[ -f mods/modbridge-fabric.jar ]] && JAVA_OPTS+=("-Dmodbridge.registryDump=$DUMP_FILE" "-Dmodbridge.gate=${MODBRIDGE_GATE:-strict}")
 if $KEEP_RUNNING; then
   java "${JAVA_OPTS[@]}" -jar fabric-server-launch.jar nogui 2>&1 | redact | tee -a "$LOG"

@@ -42,7 +42,20 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
 
         if (policy != Policy.OFF && geyser) {
             // Geyser の初期化（MOD の初期化時）が済んだ後に登録する
-            ServerLifecycleEvents.SERVER_STARTING.register(server -> GeyserGate.register(DECISION));
+            ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+                try {
+                    GeyserGate.register(DECISION);
+                } catch (Throwable e) { // Geyser の版違いによる LinkageError なども含める
+                    if (policy == Policy.STRICT) {
+                        // 断れないまま Bedrock を受け付けることになるので、起動をやめる（fail closed）
+                        LOG.error("[modbridge] Geyser の接続ゲートを登録できないため、サーバーを止める。"
+                                + "Bedrock を制限せずに起動するには -Dmodbridge.gate=permissive か off を付ける", e);
+                        server.halt(false);
+                    } else {
+                        LOG.error("[modbridge] Geyser の接続ゲートを登録できない（permissive のため起動は続ける。Bedrock の接続は制限されない）", e);
+                    }
+                }
+            });
         }
         LOG.info("[modbridge] gate policy={} geyser={}", policy, geyser);
 
@@ -75,8 +88,9 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
         try {
             Path game = FabricLoader.getInstance().getGameDir();
             RuntimeRegistry rt = registryJson == null ? null : RuntimeRegistry.fromJson("runtime-registry", registryJson);
-            BridgeIr ir = Analyzer.analyzePaths(List.of(game.resolve("mods")), rt);
-            Decision d = ConnectionGate.decide(ir, policy);
+            Path mods = game.resolve("mods").toAbsolutePath().normalize();
+            BridgeIr ir = Analyzer.analyzePaths(List.of(mods), rt);
+            Decision d = ConnectionGate.decide(ir, policy, notAnalyzed(mods));
             if (rt == null && policy == Policy.STRICT) {
                 d = new Decision(false, policy, List.of("RUNTIME_REGISTRY_UNAVAILABLE"), 1,
                         "サーバーの構成を確認できないため、Bedrock 版の接続を受け付けません（Server configuration could not be verified）");
@@ -87,9 +101,34 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
             LOG.info("[modbridge] gate decision: allowBedrock={} policy={} critical={} (report: config/modbridge/gate-report.json)",
                     d.allowBedrock(), d.policy(), d.total());
             d.reasons().forEach(r -> LOG.warn("[modbridge] gate reason: {}", r));
-        } catch (RuntimeException e) {
+        } catch (Throwable e) { // Gson の版違いによる NoSuchMethodError なども含める
             // 判定できなければ pending のまま（STRICT・PERMISSIVE とも Bedrock を断る）
-            LOG.error("[modbridge] gate analysis failed; Bedrock connections stay blocked", e);
+            LOG.error("[modbridge] 接続ゲートの解析に失敗した。Bedrock の接続は断ったままにする", e);
         }
+    }
+
+    /**
+     * 読み込まれているのに、解析した {@code mods/} の直下に無い MOD（JVM 引数で足したもの、サブフォルダーのものなど）。
+     * 同梱 JAR の MOD と、ファイルから読み込まれていないもの（Minecraft 本体・Java・Fabric Loader）は除く。
+     */
+    static final java.util.Set<String> LOADER_MODS = java.util.Set.of("minecraft", "java", "fabricloader");
+
+    static List<String> notAnalyzed(Path mods) {
+        List<String> out = new java.util.ArrayList<>();
+        for (var c : FabricLoader.getInstance().getAllMods()) {
+            // 組み込み（minecraft・java）と Fabric Loader 自身は、mods/ の外にあるのが正常
+            if ("builtin".equals(c.getMetadata().getType()) || LOADER_MODS.contains(c.getMetadata().getId()) || c.getContainingMod().isPresent()
+                    || c.getOrigin().getKind() != net.fabricmc.loader.api.metadata.ModOrigin.Kind.PATH) {
+                continue;
+            }
+            for (Path p : c.getOrigin().getPaths()) {
+                Path abs = p.toAbsolutePath().normalize();
+                if (!mods.equals(abs.getParent())) {
+                    out.add("MOD_NOT_ANALYZED " + c.getMetadata().getId() + "（mods/ の直下に無い: " + abs.getFileName() + "）");
+                }
+            }
+        }
+        out.sort(null);
+        return out;
     }
 }

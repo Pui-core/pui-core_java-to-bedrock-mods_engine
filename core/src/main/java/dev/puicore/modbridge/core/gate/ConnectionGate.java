@@ -61,10 +61,17 @@ public final class ConnectionGate {
     private ConnectionGate() {}
 
     public static Decision decide(BridgeIr ir, Policy policy) {
+        return decide(ir, policy, List.of());
+    }
+
+    /**
+     * @param extraCritical IR の外で見つかった重大な非対応（解析の対象外の場所から読み込まれた MOD など）
+     */
+    public static Decision decide(BridgeIr ir, Policy policy, List<String> extraCritical) {
         if (policy == Policy.OFF) {
             return new Decision(true, policy, List.of(), 0, "");
         }
-        List<String> reasons = new ArrayList<>();
+        List<String> reasons = new ArrayList<>(extraCritical);
         for (Diagnostic d : ir.diagnostics()) {
             if (d.severity() == Severity.ERROR) {
                 reasons.add(d.code() + " " + d.subject());

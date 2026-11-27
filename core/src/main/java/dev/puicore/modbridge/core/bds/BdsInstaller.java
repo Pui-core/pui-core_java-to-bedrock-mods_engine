@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import dev.puicore.modbridge.core.scan.SafeArchive;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -106,9 +108,12 @@ public final class BdsInstaller {
         if (w == null) {
             w = levelName(root, problems);
         }
-        if (w != null && !WORLD_NAME.matcher(w).matches()) {
-            problems.add("ワールド名に使えない文字がある");
+        if (w != null && !validWorld(root, w)) {
+            problems.add("ワールド名に使えない文字か形がある（区切り文字・制御文字、「.」「..」、先頭・末尾の「.」や空白）");
             w = null;
+        }
+        if (Files.isSymbolicLink(root.resolve("worlds"))) {
+            problems.add("worlds がシンボリックリンクになっている");
         }
         Pack bp = null;
         Pack rp = null;
@@ -144,6 +149,16 @@ public final class BdsInstaller {
                 rp == null ? null : rp.uuid(), rp == null ? null : rp.version());
     }
 
+    /** ワールド名として使えるか。解決したパスが worlds/ の直下でなければならない。 */
+    static boolean validWorld(Path root, String w) {
+        if (w == null || !WORLD_NAME.matcher(w).matches() || w.equals(".") || w.equals("..") || !w.strip().equals(w)
+                || w.startsWith(".") || w.endsWith(".")) {
+            return false;
+        }
+        Path worlds = root.resolve("worlds");
+        return worlds.equals(worlds.resolve(w).normalize().getParent());
+    }
+
     // ---- 適用 ----
 
     /**
@@ -173,13 +188,16 @@ public final class BdsInstaller {
             lock.ensureHeld();
             String id = backup(root, plan.world());
             try {
+                // 前回と違うパック ID で作り直した場合に備えて、いま入っているパックの UUID の項目も置き換える
+                String oldBp = installedUuid(root.resolve("behavior_packs").resolve(BP_DIR));
+                String oldRp = installedUuid(root.resolve("resource_packs").resolve(RP_DIR));
                 writePackDir(root.resolve("behavior_packs"), BP_DIR, bp);
                 writePackDir(root.resolve("resource_packs"), RP_DIR, rp);
-                updateWorldJson(worldDir.resolve("world_behavior_packs.json"), bp);
-                updateWorldJson(worldDir.resolve("world_resource_packs.json"), rp);
+                updateWorldJson(worldDir.resolve("world_behavior_packs.json"), bp, oldBp);
+                updateWorldJson(worldDir.resolve("world_resource_packs.json"), rp, oldRp);
             } catch (IOException | RuntimeException e) {
                 try {
-                    restore(root, id, false); // 配置で変えたもの（パックのフォルダーと 2 つの JSON）だけを戻す
+                    restore(root, readBackup(root, id), false); // 配置で変えたもの（パックのフォルダーと 2 つの JSON）だけを戻す
                 } catch (IOException | RuntimeException r) {
                     e.addSuppressed(r);
                     throw new InstallException("配置に失敗し、自動の復旧にも失敗した。バックアップ " + id + " から rollback する", e);
@@ -188,11 +206,32 @@ public final class BdsInstaller {
             }
             return id;
         } catch (IOException e) {
-            throw new InstallException("配置できない（" + e.getMessage() + "）", e);
+            throw new InstallException("配置できない（" + message(e) + "）", e);
         }
     }
 
-    /** バックアップから戻す。apply と同じく、止めたことの明示とロックが要る。 */
+    /** 利用者向けの理由。自前の例外は文言を、それ以外は種類名だけを出す（絶対パスを含めない）。 */
+    private static String message(Exception e) {
+        return e instanceof LockedException || (e instanceof IOException && e.getClass() == IOException.class) ? e.getMessage()
+                : e.getClass().getSimpleName();
+    }
+
+    /** 入っているパックの UUID（manifest が無い・読めないなら null）。 */
+    private static String installedUuid(Path packDir) {
+        JsonObject m = readJson(packDir.resolve("manifest.json"));
+        try {
+            return m == null ? null : m.getAsJsonObject("header").get("uuid").getAsString();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * バックアップから戻す。apply と同じく、止めたことの明示とロックが要る。
+     *
+     * <p>ワールドのフォルダーごと置き換えるので、置き換えの間だけはロックを放す（Windows では、開いているファイルを含む
+     * フォルダーを動かせないため）。置き換えの後でもう一度ロックを確かめ、BDS が起動していたら知らせる。
+     */
     public static void rollback(Path bds, String backupId, boolean confirmedStopped) throws InstallException {
         if (backupId == null || !BACKUP_ID.matcher(backupId).matches()) {
             throw new InstallException("バックアップ ID の形式が違う");
@@ -201,29 +240,36 @@ public final class BdsInstaller {
             throw new InstallException("BDS を止めてから、--confirm-stopped を付けて実行する");
         }
         Path root = bds.toAbsolutePath().normalize();
-        Path dir = root.resolve(BACKUP_DIR).resolve(backupId);
-        JsonObject meta = readJson(dir.resolve("backup.json"));
-        if (meta == null || !meta.has("world")) {
-            throw new InstallException("バックアップ " + backupId + " が無いか壊れている");
-        }
-        String world = meta.get("world").getAsString();
-        if (!WORLD_NAME.matcher(world).matches()) {
-            throw new InstallException("バックアップのワールド名が不正");
-        }
-        // 動いていないことをロックで確かめてから、ロックを放して戻す（ワールドのフォルダーごと置き換えるため）
+        Backup b;
         try {
-            WorldLock.acquire(root.resolve("worlds").resolve(world)).close();
-        } catch (IOException e) {
-            throw new InstallException("元に戻せない（" + e.getMessage() + "）", e);
+            b = readBackup(root, backupId);
+        } catch (IOException | RuntimeException e) {
+            throw new InstallException("バックアップ " + backupId + " を使えない（" + message(e) + "）", e);
+        }
+        Path worldDir = root.resolve("worlds").resolve(b.world());
+        try {
+            WorldLock.acquire(worldDir).close();
+            restore(root, b, true);
+        } catch (IOException | RuntimeException e) {
+            throw new InstallException("元に戻せない（" + message(e) + "）。バックアップ " + backupId + " は残っている", e);
         }
         try {
-            restore(root, backupId, true);
+            WorldLock.acquire(worldDir).close();
         } catch (IOException e) {
-            throw new InstallException("元に戻せない（" + e.getMessage() + "）", e);
+            throw new InstallException("元に戻したが、その間に BDS が起動した可能性がある。BDS を止めてから、もう一度 rollback する", e);
         }
     }
 
     // ---- ロック ----
+
+    /** BDS が動いていてロックを取れない。メッセージは固定の文言（パスを含めない）。 */
+    static final class LockedException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        LockedException() {
+            super("ワールドの DB がロックされている。BDS が動いているので止める");
+        }
+    }
 
     /**
      * ワールドの DB（LevelDB）のロック。BDS が動いていれば、ロックを取れない。
@@ -243,7 +289,12 @@ public final class BdsInstaller {
             if (!Files.isRegularFile(lockFile)) {
                 return new WorldLock(null, null);
             }
-            FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE);
+            FileChannel ch;
+            try {
+                ch = FileChannel.open(lockFile, StandardOpenOption.WRITE);
+            } catch (IOException e) {
+                throw new LockedException(); // Windows では、BDS が開いていると開けない
+            }
             FileLock l;
             try {
                 l = ch.tryLock();
@@ -252,7 +303,7 @@ public final class BdsInstaller {
             }
             if (l == null) {
                 ch.close();
-                throw new IOException("ワールドの DB がロックされている。BDS が動いているので止める");
+                throw new LockedException();
             }
             return new WorldLock(ch, l);
         }
@@ -277,6 +328,14 @@ public final class BdsInstaller {
 
     // ---- バックアップと復元 ----
 
+    /** バックアップの中身。{@code existed} は対象ごとに、バックアップの時点で存在したか。 */
+    private record Backup(String id, Path dir, String world, Map<String, Boolean> existed) {}
+
+    /** バックアップの対象（ワールド名から決まる 3 つ）。 */
+    private static List<String> targets(String world) {
+        return List.of("worlds/" + world, "behavior_packs/" + BP_DIR, "resource_packs/" + RP_DIR);
+    }
+
     private static String backup(Path root, String world) throws IOException {
         String base = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC));
         Path backups = root.resolve(BACKUP_DIR);
@@ -291,7 +350,7 @@ public final class BdsInstaller {
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("world", world);
             Map<String, Boolean> existed = new TreeMap<>();
-            for (String rel : List.of("worlds/" + world, "behavior_packs/" + BP_DIR, "resource_packs/" + RP_DIR)) {
+            for (String rel : targets(world)) {
                 Path src = root.resolve(rel);
                 boolean exists = Files.exists(src, LinkOption.NOFOLLOW_LINKS);
                 existed.put(rel, exists);
@@ -309,45 +368,101 @@ public final class BdsInstaller {
     }
 
     /**
-     * バックアップから戻す。
+     * バックアップを読み、すべて検査する。対象は、ワールド名から決まる 3 つと完全に一致しなければならず、
+     * 値は真偽値でなければならない（書き換えられた backup.json でほかのフォルダーを消さないため）。
+     */
+    private static Backup readBackup(Path root, String id) throws IOException {
+        Path dir = root.resolve(BACKUP_DIR).resolve(id);
+        JsonObject meta = readJson(dir.resolve("backup.json"));
+        if (meta == null || !(meta.get("world") instanceof JsonPrimitive wp) || !wp.isString()) {
+            throw new IOException("backup.json が無いか壊れている");
+        }
+        String world = wp.getAsString();
+        if (!validWorld(root, world)) {
+            throw new IOException("backup.json のワールド名が不正");
+        }
+        if (!(meta.get("existed") instanceof JsonObject existed) || !new TreeSet<>(existed.keySet()).equals(new TreeSet<>(targets(world)))) {
+            throw new IOException("backup.json の対象が、このワールドのバックアップの対象と一致しない");
+        }
+        Map<String, Boolean> out = new TreeMap<>();
+        for (var e : existed.entrySet()) {
+            if (!(e.getValue() instanceof JsonPrimitive p) || !p.isBoolean()) {
+                throw new IOException("backup.json の値が真偽値ではない: " + e.getKey());
+            }
+            if (p.getAsBoolean() && !Files.isDirectory(dir.resolve(e.getKey()), LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("バックアップに " + e.getKey() + " が無い");
+            }
+            out.put(e.getKey(), p.getAsBoolean());
+        }
+        return new Backup(id, dir, world, out);
+    }
+
+    /**
+     * バックアップから戻す。検査は {@link #readBackup} で済ませてある。
      *
      * @param fullWorld true ならワールドのフォルダーごと戻す（rollback）。false なら、ワールドのうち配置で変える
      *                  2 つの JSON だけを戻す（配置の失敗時。ワールドの DB はロック中で、配置では触らないため）
      */
-    private static void restore(Path root, String id, boolean fullWorld) throws IOException {
-        Path dir = root.resolve(BACKUP_DIR).resolve(id);
-        JsonObject meta = readJson(dir.resolve("backup.json"));
-        if (meta == null || !(meta.get("existed") instanceof JsonObject existed)) {
-            throw new IOException("バックアップ " + id + " が壊れている");
-        }
-        for (var e : existed.entrySet()) {
+    private static void restore(Path root, Backup b, boolean fullWorld) throws IOException {
+        for (var e : b.existed().entrySet()) {
             String rel = e.getKey();
-            if (!(rel.startsWith("worlds/") || rel.equals("behavior_packs/" + BP_DIR) || rel.equals("resource_packs/" + RP_DIR))
-                    || rel.contains("..")) {
-                throw new IOException("バックアップの対象が不正: " + rel);
-            }
-            Path target = root.resolve(rel).normalize();
-            if (!target.startsWith(root)) {
-                throw new IOException("バックアップの対象が BDS の外を指している");
-            }
+            Path target = root.resolve(rel);
+            Path saved = e.getValue() ? b.dir().resolve(rel) : null;
             if (rel.startsWith("worlds/") && !fullWorld) {
                 for (String json : List.of("world_behavior_packs.json", "world_resource_packs.json")) {
-                    Path saved = dir.resolve(rel).resolve(json);
+                    Path s = saved == null ? null : saved.resolve(json);
                     Files.deleteIfExists(target.resolve(json));
-                    if (Files.isRegularFile(saved)) {
-                        Files.copy(saved, target.resolve(json), StandardCopyOption.REPLACE_EXISTING);
+                    if (s != null && Files.isRegularFile(s)) {
+                        Files.copy(s, target.resolve(json), StandardCopyOption.REPLACE_EXISTING);
                     }
                 }
                 continue;
             }
             // ロックファイルはバックアップしないので、戻す前にあったら作り直す（LevelDB も無ければ作るが、元の形に揃える）
-            boolean hadLock = Files.isRegularFile(target.resolve("db").resolve("LOCK"));
-            deleteTree(target);
-            if (e.getValue().getAsBoolean()) {
-                copyTree(dir.resolve(rel), target, false);
-                if (hadLock && Files.isDirectory(target.resolve("db")) && !Files.exists(target.resolve("db").resolve("LOCK"))) {
-                    Files.createFile(target.resolve("db").resolve("LOCK"));
+            replaceTree(target, saved, rel.startsWith("worlds/") && Files.isRegularFile(target.resolve("db").resolve("LOCK")));
+        }
+    }
+
+    /**
+     * {@code target} を {@code source} の複製で置き換える（{@code source} が null なら消す）。
+     * 先に一時フォルダーへ複製してから入れ替えるので、複製に失敗しても {@code target} は元のまま残る。
+     */
+    private static void replaceTree(Path target, Path source, boolean recreateDbLock) throws IOException {
+        Path parent = target.getParent();
+        Files.createDirectories(parent);
+        String name = target.getFileName().toString();
+        Path staged = null;
+        Path old = null;
+        try {
+            if (source != null) {
+                staged = Files.createTempDirectory(parent, "." + name + ".restore");
+                copyTree(source, staged, false);
+                if (recreateDbLock && Files.isDirectory(staged.resolve("db")) && !Files.exists(staged.resolve("db").resolve("LOCK"))) {
+                    Files.createFile(staged.resolve("db").resolve("LOCK"));
                 }
+            }
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                old = parent.resolve("." + name + ".old-" + Long.toHexString(System.nanoTime()));
+                move(target, old);
+            }
+            if (staged != null) {
+                try {
+                    move(staged, target);
+                    staged = null;
+                } catch (IOException e) {
+                    if (old != null) {
+                        move(old, target);
+                        old = null;
+                    }
+                    throw e;
+                }
+            }
+        } finally {
+            if (staged != null) {
+                deleteTree(staged);
+            }
+            if (old != null) {
+                deleteTree(old);
             }
         }
     }
@@ -366,17 +481,23 @@ public final class BdsInstaller {
                 Files.createDirectories(p.getParent());
                 Files.write(p, f.getValue());
             }
-            Path target = parent.resolve(name);
-            deleteTree(target);
-            move(tmp, target);
+            // 書き終えたものと入れ替える（途中で失敗しても、元のフォルダーは残る）
+            replaceTree(parent.resolve(name), tmp, false);
         } finally {
             deleteTree(tmp);
         }
     }
 
-    /** {@code [{"pack_id": ..., "version": [...]}]} の自分の項目を置き換える。ほかの項目と順序は残す。 */
-    static void updateWorldJson(Path file, Pack pack) throws IOException {
+    /**
+     * {@code [{"pack_id": ..., "version": [...]}]} の自分の項目を置き換える。ほかの項目と順序は残す。
+     * 自分の項目（今回の UUID か、{@code previousUuid}）が既にあれば、最初のものの位置で置き換え、残りは消す。無ければ末尾に足す。
+     */
+    static void updateWorldJson(Path file, Pack pack, String previousUuid) throws IOException {
+        JsonObject mine = new JsonObject();
+        mine.addProperty("pack_id", pack.uuid());
+        mine.add("version", GSON.toJsonTree(pack.version()));
         JsonArray arr = new JsonArray();
+        boolean placed = false;
         if (Files.exists(file)) {
             JsonElement e;
             try {
@@ -388,17 +509,19 @@ public final class BdsInstaller {
                 throw new IOException(file.getFileName() + " が配列ではない");
             }
             for (JsonElement x : a) {
-                boolean mine = x instanceof JsonObject o && o.has("pack_id") && o.get("pack_id").isJsonPrimitive()
-                        && pack.uuid().equals(o.get("pack_id").getAsString());
-                if (!mine) {
+                String id = x instanceof JsonObject o && o.get("pack_id") instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
+                boolean ours = id != null && (id.equals(pack.uuid()) || id.equals(previousUuid));
+                if (!ours) {
                     arr.add(x);
+                } else if (!placed) {
+                    arr.add(mine);
+                    placed = true;
                 }
             }
         }
-        JsonObject mine = new JsonObject();
-        mine.addProperty("pack_id", pack.uuid());
-        mine.add("version", GSON.toJsonTree(pack.version()));
-        arr.add(mine);
+        if (!placed) {
+            arr.add(mine);
+        }
         Path tmp = Files.createTempFile(file.getParent(), "." + file.getFileName(), ".tmp");
         try {
             Files.writeString(tmp, GSON.toJson(arr) + "\n", StandardCharsets.UTF_8);

@@ -181,6 +181,61 @@ class BdsInstallerTest {
         assertFalse(BdsInstaller.plan(bds, packs, "../escape").ok(), "ワールド名に区切り文字は使えない");
     }
 
+    @Test
+    void 書き換えられたbackup_jsonではほかのワールドを消さない() throws Exception {
+        Path other = Files.createDirectories(bds.resolve("worlds/other/db"));
+        Files.writeString(other.resolve("CURRENT"), "keep");
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Path meta = bds.resolve("modbridge-backups").resolve(id).resolve("backup.json");
+        String original = Files.readString(meta);
+        for (String tampered : List.of(
+                original.replace("\"existed\": {", "\"existed\": {\n    \"worlds/other\": false,"),
+                original.replace("\"existed\": {", "\"existed\": {\n    \"worlds/\": false,"),
+                original.replace(": true", ": \"yes\""),
+                original.replace("\"world\": \"Bedrock level\"", "\"world\": \"..\""),
+                original.replace("\"world\": \"Bedrock level\"", "\"world\": 3"))) {
+            Files.writeString(meta, tampered);
+            assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true), tampered);
+            assertEquals("keep", Files.readString(other.resolve("CURRENT")), "ほかのワールドは残る");
+            assertTrue(Files.isDirectory(world), "対象のワールドも、検査に通るまで触らない");
+        }
+        Files.writeString(meta, original);
+        BdsInstaller.rollback(bds, id, true);
+    }
+
+    @Test
+    void ワールド名のドットや空白は使えない() {
+        for (String bad : List.of(".", "..", " Bedrock level", "Bedrock level ", ".hidden", "a.", "a/b", "a\\b")) {
+            assertFalse(BdsInstaller.plan(bds, packs, bad).ok(), bad);
+        }
+        assertTrue(BdsInstaller.plan(bds, packs, "Bedrock level").ok());
+    }
+
+    @Test
+    void パックIDを変えて作り直しても古い項目を残さず_元の位置で置き換える() throws Exception {
+        BdsInstaller.apply(bds, packs, null, true);
+        String first = BdsInstaller.plan(bds, packs, null).bpUuid();
+        // 自分の項目の後ろに、ほかのパックを足す
+        String json = Files.readString(world.resolve("world_behavior_packs.json"));
+        Files.writeString(world.resolve("world_behavior_packs.json"),
+                json.replaceFirst("\\]\\s*$", ",\n  {\"pack_id\": \"99999999-8888-7777-6666-555555555555\", \"version\": [2, 0, 0]}\n]\n"));
+        // パック ID を変えて作り直す
+        BridgeIr ir = Analyzer.analyzePaths(List.of(dir.resolve("test_ingot.jar")));
+        PackCompiler.Result r = PackCompiler.compile(ir, Analyzer.jarFiles(List.of(dir.resolve("test_ingot.jar"))),
+                new PackCompiler.Settings("Renamed", "renamed"));
+        PackPublisher.publish(packs, r.outputs());
+        String second = BdsInstaller.plan(bds, packs, null).bpUuid();
+        assertFalse(first.equals(second));
+        BdsInstaller.apply(bds, packs, null, true);
+        String after = Files.readString(world.resolve("world_behavior_packs.json"));
+        assertEquals(0, count(after, first), "古い UUID の項目は残さない");
+        assertEquals(1, count(after, second));
+        int otherAt = after.indexOf("11111111-2222");
+        int mineAt = after.indexOf(second);
+        int laterAt = after.indexOf("99999999-8888");
+        assertTrue(otherAt < mineAt && mineAt < laterAt, "自分の項目は元の位置に置く: " + after);
+    }
+
     private static int count(String s, String needle) {
         int n = 0;
         for (int i = s.indexOf(needle); i >= 0; i = s.indexOf(needle, i + 1)) {

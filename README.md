@@ -9,7 +9,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 
 | モード | 実行主体 | 状態 |
 |---|---|---|
-| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 実機1人の Floodgate 認証、試験用アイテムの取得とブロック設置を確認（[ADR-0005](docs/adr/0005-mode-a-connection-gate.md)） |
+| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 1人と Java 1人の同時入場、Bedrock での試験用ブロックの設置・破壊・回収、非対応構成での接続拒否を確認（[実機試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
 | B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 

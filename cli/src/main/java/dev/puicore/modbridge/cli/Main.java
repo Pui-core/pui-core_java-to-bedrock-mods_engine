@@ -185,40 +185,42 @@ public final class Main {
 
             BridgeIr ir = Analyzer.analyzePaths(inputs, runtime);
             String key = PackPublisher.cacheKey(ir, settings);
-            Map<String, byte[]> files = null;
-            try {
-                files = cache == null ? null : PackPublisher.readCache(cache, key);
-            } catch (IOException e) {
-                err.println("キャッシュを読めない（作り直す）: " + e.getClass().getSimpleName());
+            PackCompiler.Result result = null;
+            if (cache != null && !hasErrors(ir)) {
+                try {
+                    result = PackPublisher.readCachedResult(cache, key);
+                } catch (IOException e) {
+                    err.println("キャッシュを読めない（作り直す）: " + e.getClass().getSimpleName());
+                }
             }
-            if (files != null) {
+            boolean cacheHit = result != null;
+            if (cacheHit) {
                 out.println("キャッシュを使う: " + key.substring(0, 12));
             } else {
-                PackCompiler.Result r = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), settings);
-                printDiagnostics(ir, out);
-                out.println("## 生成の診断");
-                r.diagnostics().forEach(d -> out.println("[" + d.severity() + "] " + d.code() + " " + d.subject() + ": " + d.message()));
-                if (!r.ok()) {
-                    out.println("パックを作らなかった（出力フォルダーは変更していない）");
-                    return FAILED;
-                }
-                files = r.outputs();
-                Map<String, Long> status = new TreeMap<>();
-                r.mapping().entries().forEach(e -> status.merge(e.status(), 1L, Long::sum));
-                out.println("変換結果（リソースパック）: " + status);
-                Map<String, Long> bpStatus = new TreeMap<>();
-                r.mapping().behavior().forEach(e -> bpStatus.merge(e.kind() + " " + e.status(), 1L, Long::sum));
-                out.println("変換結果（ビヘイビアパック）: " + bpStatus);
-                if (cache != null) {
-                    try {
-                        PackPublisher.writeCache(cache, key, files);
-                    } catch (IOException e) {
-                        err.println("キャッシュに保存できない（公開は続ける）: " + e.getClass().getSimpleName());
-                    }
+                result = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), settings);
+            }
+            printDiagnostics(ir, out);
+            out.println("## 生成の診断");
+            result.diagnostics().forEach(d -> out.println("[" + d.severity() + "] " + d.code() + " " + d.subject() + ": " + d.message()));
+            if (!result.ok()) {
+                out.println("パックを作らなかった（出力フォルダーは変更していない）");
+                return FAILED;
+            }
+            Map<String, Long> status = new TreeMap<>();
+            result.mapping().entries().forEach(e -> status.merge(e.status(), 1L, Long::sum));
+            out.println("変換結果（リソースパック）: " + status);
+            Map<String, Long> bpStatus = new TreeMap<>();
+            result.mapping().behavior().forEach(e -> bpStatus.merge(e.kind() + " " + e.status(), 1L, Long::sum));
+            out.println("変換結果（ビヘイビアパック）: " + bpStatus);
+            if (cache != null && !cacheHit) {
+                try {
+                    PackPublisher.writeCache(cache, key, result.outputs());
+                } catch (IOException e) {
+                    err.println("キャッシュに保存できない（公開は続ける）: " + e.getClass().getSimpleName());
                 }
             }
             try {
-                PackPublisher.publish(outDir, files);
+                PackPublisher.publish(outDir, result.outputs());
             } catch (IOException e) {
                 err.println("公開できない（旧成果物は残している）: " + e.getMessage());
                 return IO;

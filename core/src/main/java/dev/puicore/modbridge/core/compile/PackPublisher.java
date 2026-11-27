@@ -50,6 +50,12 @@ public final class PackPublisher {
 
     /** キャッシュにあれば、その内容を返す。壊れていれば（チェックサム不一致）null。 */
     public static Map<String, byte[]> readCache(Path cacheDir, String key) throws IOException {
+        PackCompiler.Result result = readCachedResult(cacheDir, key);
+        return result == null ? null : result.outputs();
+    }
+
+    /** キャッシュの成果物と生成時の診断を読む。検証に失敗した場合は null。 */
+    public static PackCompiler.Result readCachedResult(Path cacheDir, String key) throws IOException {
         Path dir = cacheDir.resolve(key);
         Path sums = dir.resolve(CHECKSUMS);
         if (!Files.isRegularFile(sums)) {
@@ -75,7 +81,7 @@ public final class PackPublisher {
         if (files.size() != PackCompiler.OUTPUT_FILES.size()) {
             return null;
         }
-        return PackCompiler.consistent(files) ? files : null;
+        return PackCompiler.restoreCachedResult(files);
     }
 
     /** キャッシュに保存する。同じ鍵のものが既にあれば置き換える。 */

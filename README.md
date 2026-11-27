@@ -9,7 +9,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 
 | モード | 実行主体 | 状態 |
 |---|---|---|
-| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | サーバー側の起動と登録を確認済み。Bedrock 実機からの接続は未確認（[ADR-0002](docs/adr/0002-v0.0.1-target-versions-and-spike.md)） |
+| A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 実機1人の Floodgate 認証、試験用アイテムの取得とブロック設置を確認（[ADR-0005](docs/adr/0005-mode-a-connection-gate.md)） |
 | B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
@@ -100,7 +100,7 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実
 
   初回起動は Geyser の設定を生成する回なので、既定設定のまま動きます。
 - 実機から接続するときは `--keep-running` を使います。同じ LAN の Bedrock クライアントで「サーバーを追加」を選び、この PC の LAN アドレスとポート 19132 を入力してください。
-- **`--keep-running` は LAN 全体に公開されます**。Java 側は `online-mode=false` で、ホワイトリストもありません。信頼できる LAN でだけ使い、確認が終わったらすぐ停止してください。
+- **`--keep-running` は LAN 全体に公開されます**。従来のスパイクでは Java 側が `online-mode=false` です。信頼できる LAN でだけ使い、確認が終わったら停止してください。
 
 ### v0.1.0 の認証・実機検証
 

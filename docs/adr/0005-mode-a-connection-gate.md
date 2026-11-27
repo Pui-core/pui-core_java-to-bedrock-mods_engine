@@ -1,6 +1,6 @@
 # ADR-0005: Mode A の接続ゲート
 
-- 状態: 採用（Bedrock 実機で断られることは未検証）
+- 状態: 採用（Bedrock 実機1人の接続・取得・設置を確認）
 - 日付: 2026-11-27
 - 関連: #5, #1、前提は ADR-0003
 
@@ -76,12 +76,26 @@
 ### Mode A の実機確認（#5）
 
 1. [README の認証付きスパイク](../../README.md#v010-の認証実機検証)を `--keep-running` で起動する。サーバーログで `gate decision: allowBedrock=true`、Geyser の起動完了、Hydraulic による fixture のパック登録を確認する。
+   ホワイトリストを使う場合は、サーバーコンソールの `fwhitelist add <ゲーマータグ>` で Bedrock の参加者を登録する。 [Floodgate のホワイトリスト](https://geysermc.org/wiki/floodgate/features/#whitelist-command)
 2. 同じ LAN で、別々の Microsoft アカウントにサインインした無改造の Bedrock 版 2 台をサーバーの LAN アドレスとポート `19132` に接続する。パックを受け入れると接続でき、拒否するとワールドに入れないことを確認する。サーバーと同じ PC からは、fixture を入れた同じ版の Fabric クライアントで `127.0.0.1:25565` に接続する。
 3. コンソールの `list` で名前を確認し、Bedrock 版の各プレイヤーに `give <プレイヤー名> pmb_fixture:test_ingot 16`、`give <プレイヤー名> pmb_fixture:test_block 2`、`give <プレイヤー名> minecraft:iron_pickaxe` を送る。両方のクライアントでインゴットの外観・名称・所持数を確認する。各プレイヤーがサバイバルでブロックを 2 個置き、片方をツルハシで壊す。他方の Bedrock と Java 版からも同じ座標の変化を確認する。各プレイヤーについて、ドロップが 1 個だけ発生し、拾うと所持数が 1 増え、ツルハシの耐久が 1 減ることを確認する。もう片方のブロックは設置したままにする。
 4. Bedrock 版を切断して接続し直す。さらにコンソールで `stop` を実行し、同じ作業フォルダーで起動する。残したブロック、アイテム数、ツルハシの耐久が維持されることを確認する。
-5. サーバーを止め、Bedrock 2 人のプレイヤーデータファイル（`spike-world/playerdata/` にある各 UUID の `.dat`）の SHA-256 を控える。`mods/` に MOD メタデータを持たない検証用 JAR を追加して再起動し、`allowBedrock=false` と `MISSING_MOD_METADATA` を確認する。Bedrock の両方で入場前に拒否され、Java では接続できることを確かめる。Java 版またはコンソールから、手順 3 で残したブロックを同じ座標で確認する。`geyser reload` 後にも Bedrock の接続を試す。停止後に、Bedrock のプレイヤーデータの SHA-256 が同じであることを確認し、検証用 JAR を外して元の構成に戻す。
+5. サーバーを止め、Bedrock 2 人のプレイヤーデータファイル（Java 26.3 では `spike-world/players/data/` にある各 UUID の `.dat`）の SHA-256 を控える。`mods/` に MOD メタデータを持たない検証用 JAR を追加して再起動し、`allowBedrock=false` と `MISSING_MOD_METADATA` を確認する。Bedrock の両方で入場前に拒否され、Java では接続できることを確かめる。Java 版またはコンソールから、手順 3 で残したブロックを同じ座標で確認する。`geyser reload` 後にも Bedrock の接続を試す。停止後に、Bedrock のプレイヤーデータの SHA-256 が同じであることを確認し、検証用 JAR を外して元の構成に戻す。
 
 証跡にはクライアントのバージョン、各操作の成否、拒否時の表示、再起動前後の座標と所持数、該当するサーバーログを残す。実機の結果が出るまでは #5 の受け入れ条件を未達として扱う。
+
+### 実機試験の結果（2026-11-27）
+
+Windows 上の隔離ワールドで Java 26.3、Fabric Loader 0.20.1、Geyser 2.12.1-b1312、Hydraulic 1.0.0-b132、Floodgate Fabric 2.2.7-b69、fixture 0.0.3 を使用した。検証用に Bedrock の待受を Tailscale アダプターに限定した。Bedrock 実機のクライアント版は未記録。
+
+| 項目 | 結果 |
+| --- | --- |
+| サーバー起動・登録 | Floodgate の起動、Hydraulic による fixture パックの変換、接続ゲートの `allowBedrock=true policy=STRICT critical=0` をログで確認 |
+| 実機からの認証・入場 | Tailscale 経由の NetherNet 接続と Floodgate 認証を確認。初回は空のホワイトリストで拒否された。参加者を登録し、再試行で1人が入場した |
+| 取得・設置 | 試験用インゴット16個、ブロック2個、鉄のツルハシ1個の付与をログで確認。サーバー保存統計の `minecraft:used / pmb_fixture:test_block` は2だった |
+| 切断・保存 | 同じ接続が1回タイムアウトした。切断時にプレイヤーデータを保存したことを確認した |
+
+未確認項目はクライアントでの見た目とパック拒否時の入場制御、破壊・ドロップ回収・耐久、再接続とサーバー再起動後の状態、Bedrock 2人と Java 版の混在、重大な非対応構成での実機からの接続拒否とワールドへの影響。
 
 ### 共通素材コンパイラの表示確認（#4）
 

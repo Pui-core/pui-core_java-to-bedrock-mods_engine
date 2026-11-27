@@ -344,7 +344,7 @@ public final class JarScanner {
         return keys;
     }
 
-    private static boolean isModNamespace(String ns) {
+    static boolean isModNamespace(String ns) {
         return !ns.equals("minecraft") && !ns.equals("c") && !ns.equals("fabric");
     }
 

@@ -3,7 +3,7 @@
 	"id": "pmb_fixture",
 	"version": "${version}",
 	"name": "PuiModBridge Fixture",
-	"description": "互換エンジン検証用の自作 fixture。非バニラのアイテムとブロックを1種ずつ登録する。",
+	"description": "互換エンジン検証用の自作 fixture。非バニラのアイテムとブロックを1種ずつと、素材を持たないコード専用のアイテムを1種登録する。",
 	"authors": ["Pui-core"],
 	"license": "LicenseRef-Undecided",
 	"environment": "*",

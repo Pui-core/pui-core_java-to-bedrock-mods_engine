@@ -364,6 +364,87 @@ class AnalyzerTest {
         }
     }
 
+    // ---- 実行時レジストリとの突き合わせ ----
+
+    private Path runtime(String name, String minecraft, String mods, String... entries) throws IOException {
+        StringBuilder e = new StringBuilder();
+        for (String entry : entries) {
+            String[] p = entry.split(" ");
+            e.append(e.isEmpty() ? "" : ",").append("{\"registry\":\"").append(p[0]).append("\",\"id\":\"").append(p[1]).append("\"}");
+        }
+        Path p = dir.resolve(name);
+        Files.writeString(p, "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"" + minecraft
+                + "\",\"mods\":[" + mods + "],\"entries\":[" + e + "]}");
+        return p;
+    }
+
+    private static final String LOADED = "{\"id\":\"pmb_fixture\",\"version\":\"0.0.2\"},{\"id\":\"other\",\"version\":\"1\"}";
+
+    @Test
+    void 実行時にだけある定義と静的にだけある定義を検出する() throws IOException {
+        Path jar = jar("fixture.jar", fixtureEntries("pmb_fixture"));
+        // 静的解析のレシピ pmb_fixture:test_block は実行時に無い。code_only_marker は実行時にだけある
+        Path rt = runtime("rt.json", "26.3", LOADED, "item pmb_fixture:test_ingot", "item pmb_fixture:test_block",
+                "block pmb_fixture:test_block", "item pmb_fixture:code_only_marker", "item other:thing", "block other:thing");
+        BridgeIr ir = Analyzer.analyzePaths(List.of(jar), rt);
+        assertFalse(hasErrors(ir), ir.diagnostics().toString());
+
+        var codeOnly = codes(ir, "CODE_ONLY_DEFINITION");
+        assertEquals(1, codeOnly.size(), ir.diagnostics().toString());
+        assertEquals("pmb_fixture:code_only_marker", codeOnly.get(0).subject());
+        var def = ir.definitions().stream().filter(d -> d.id().equals("pmb_fixture:code_only_marker")).findFirst().orElseThrow();
+        assertEquals(BridgeIr.Source.RUNTIME_REGISTRY, def.source());
+        assertEquals("pmb_fixture", def.modId());
+        assertTrue(ir.plans().stream().filter(p -> p.subject().equals("item:pmb_fixture:code_only_marker"))
+                .allMatch(p -> p.status() == Status.UNTESTED && (p.mode() == Mode.A || p.method() == Method.UNSUPPORTED)));
+
+        var staticOnly = codes(ir, "STATIC_ONLY");
+        assertEquals(1, staticOnly.size(), staticOnly.toString());
+        assertTrue(staticOnly.get(0).message().startsWith("RECIPE"));
+
+        var ingot = ir.definitions().stream().filter(d -> d.id().equals("pmb_fixture:test_ingot")).findFirst().orElseThrow();
+        assertEquals("registered", ingot.attributes().get("runtime"));
+        assertEquals(BridgeIr.Source.STATIC_ASSET, ingot.source());
+
+        // 入力していない MOD（other）の登録は件数だけ
+        var outside = codes(ir, "RUNTIME_OUTSIDE_INPUT");
+        assertEquals(1, outside.size());
+        assertTrue(outside.get(0).message().contains("2 件"));
+        assertTrue(ir.inputs().stream().anyMatch(i -> i.name().equals("rt.json") && i.sha256().length() == 64));
+
+        // 登録の並び順によらず同じ IR
+        Path rt2 = runtime("rt.json", "26.3", LOADED, "block other:thing", "item other:thing", "item pmb_fixture:code_only_marker",
+                "block pmb_fixture:test_block", "item pmb_fixture:test_block", "item pmb_fixture:test_ingot");
+        String first = IrJson.write(ir);
+        assertEquals(first.replaceAll("\"sha256\": \"[0-9a-f]+\"", ""),
+                IrJson.write(Analyzer.analyzePaths(List.of(jar), rt2)).replaceAll("\"sha256\": \"[0-9a-f]+\"", ""));
+    }
+
+    @Test
+    void 取得時に読み込まれていないMODは警告し_静的にだけある判定から外す() throws IOException {
+        Path jar = jar("fixture.jar", fixtureEntries("pmb_fixture"));
+        BridgeIr ir = Analyzer.analyzePaths(List.of(jar), runtime("rt.json", "26.2", "{\"id\":\"other\",\"version\":\"1\"}"));
+        assertEquals(1, codes(ir, "MOD_NOT_LOADED").size());
+        assertTrue(codes(ir, "STATIC_ONLY").isEmpty());
+        assertEquals(1, codes(ir, "RUNTIME_MINECRAFT_MISMATCH").size());
+    }
+
+    @Test
+    void 不正な実行時レジストリはエラー() throws IOException {
+        Path jar = jar("fixture.jar", fixtureEntries("pmb_fixture"));
+        for (String bad : List.of("[]", "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":2}",
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[],\"entries\":[{\"registry\":\"entity\",\"id\":\"a:b\"}]}",
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":[],\"entries\":[{\"registry\":\"item\",\"id\":\"A B\"}]}",
+                "{\"schema\":\"modbridge.runtime-registry\",\"schemaVersion\":1,\"minecraft\":\"26.3\",\"mods\":{},\"entries\":[]}")) {
+            Path rt = dir.resolve("bad-rt.json");
+            Files.writeString(rt, bad);
+            BridgeIr ir = Analyzer.analyzePaths(List.of(jar), rt);
+            assertEquals(1, codes(ir, "RUNTIME_REGISTRY_INVALID").size(), bad);
+        }
+        BridgeIr missing = Analyzer.analyzePaths(List.of(jar), dir.resolve("none.json"));
+        assertEquals(1, codes(missing, "IO_ERROR").size());
+    }
+
     @Test
     void IRはJSONで往復でき_別スキーマは拒否する() throws IOException {
         BridgeIr ir = Analyzer.analyzePaths(List.of(jar("fixture.jar", fixtureEntries("pmb_fixture"))));

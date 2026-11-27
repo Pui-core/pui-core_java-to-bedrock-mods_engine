@@ -87,6 +87,8 @@ class ScanCommandTest {
     @Test
     void outの重複指定と不正なIRは拒否する_スタックトレースを出さない() throws IOException {
         assertEquals(Main.USAGE, run("scan", "x.jar", "--out", "a.json", "--out", "b.json"));
+        assertEquals(Main.USAGE, run("validate", "x.jar", "--runtime"));
+        assertEquals(Main.USAGE, run("validate", "x.jar", "--runtime", "a.json", "--runtime", "b.json"));
         Path bad = dir.resolve("bad.json");
         for (String json : new String[] {"[]", "{\"schema\":[1]}", "{\"schema\":\"modbridge.bridge-ir\"}",
                 "{\"schema\":\"modbridge.bridge-ir\",\"schemaVersion\":1,\"inputs\":\"x\"}"}) {

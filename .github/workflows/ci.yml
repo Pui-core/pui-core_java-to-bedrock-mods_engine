@@ -35,7 +35,7 @@ jobs:
         shell: bash
 
   fixture:
-    name: fixture MOD (Fabric MC 26.3)
+    name: fixture MOD と取得 MOD (Fabric MC 26.3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,11 +43,13 @@ jobs:
         run: |
           set -eu
           cat_val() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" gradle/libs.versions.toml; }
-          fx_val() { sed -n "s/^$1=//p" fixtures/fabric-fixture/gradle.properties; }
+          prop_val() { sed -n "s/^$2=//p" "$1/gradle.properties"; }
           fail=0
-          for pair in minecraft:minecraft_version fabric-loader:loader_version fabric-api:fabric_api_version fabric-loom:loom_version; do
-            c="$(cat_val "${pair%%:*}")"; f="$(fx_val "${pair##*:}")"
-            if [ "$c" != "$f" ]; then echo "不一致: ${pair%%:*} catalog=$c fixture=$f"; fail=1; fi
+          for dir in fixtures/fabric-fixture platform-fabric; do
+            for pair in minecraft:minecraft_version fabric-loader:loader_version fabric-api:fabric_api_version fabric-loom:loom_version; do
+              c="$(cat_val "${pair%%:*}")"; f="$(prop_val "$dir" "${pair##*:}")"
+              if [ "$c" != "$f" ]; then echo "不一致: ${pair%%:*} catalog=$c $dir=$f"; fail=1; fi
+            done
           done
           sp_val() { sed -n "s/^$1=//p" scripts/spike-server.sh; }
           [ "$(sp_val MC)" = "$(cat_val minecraft)" ] || { echo "不一致: spike MC"; fail=1; }
@@ -60,8 +62,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew build --no-daemon
         working-directory: fixtures/fabric-fixture
+      - run: ./gradlew build --no-daemon
+        working-directory: platform-fabric
       - uses: actions/upload-artifact@v4
         with:
-          name: pmb-fabric-fixture
-          path: fixtures/fabric-fixture/build/libs/*.jar
+          name: fabric-mods
+          path: |
+            fixtures/fabric-fixture/build/libs/*.jar
+            platform-fabric/build/libs/*.jar
           retention-days: 14

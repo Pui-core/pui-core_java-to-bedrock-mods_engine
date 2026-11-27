@@ -1,6 +1,6 @@
-# ADR-0003: Bridge IR（スキーマ 1）と静的解析・診断 CLI
+# ADR-0003: Bridge IR（スキーマ 1）と静的解析・実行時レジストリ・診断 CLI
 
-- 状態: 採用（実行時レジストリの取得は未実装）
+- 状態: 採用
 - 日付: 2026-11-27
 - 関連: #3, #1
 
@@ -15,7 +15,7 @@ Epic #1 の横断ルールは「解析 → IR → 方式決定 → モード別�
 - `inputs`（ファイル名・SHA-256・サイズ）、`mods`、`definitions`、`diagnostics`、`plans` を持つ。
 - **再現性**: 時刻・絶対パス・実行環境を含めない。リストはすべてソートし、マップはキー順に並べる。同じ入力からは、入力の指定順にかかわらず同じ JSON を出力する（テストで確認）。
 - **識別子**: 永続識別子は `namespace:path` の文字列にする。Minecraft が起動時に振る数値 ID は IR に入れない。
-- **情報源**: 各定義に `source` を持たせる。`STATIC_ASSET`（素材ファイルからの推定）と `RUNTIME_REGISTRY`（実行時レジストリでの確認）を区別する。後者は未実装。
+- **情報源**: 各定義に `source` を持たせる。`STATIC_ASSET`（素材ファイルからの推定）と `RUNTIME_REGISTRY`（実行時レジストリにだけあるもの）を区別する。静的・実行時の両方にある定義は `STATIC_ASSET` のまま、属性 `runtime=registered` を付ける。
 - **読込**: `IrJson.read` は、スキーマ名と版が一致しない IR、必須の欄が欠けた IR、型の違う IR を `IllegalArgumentException` で拒否する。スキーマ 1 は検証の記録を持たないので、状態が `SUPPORTED` / `PARTIAL` の計画を含む IR も拒否する。
 
 ### 静的解析（`SafeArchive`、`JarScanner`、`Analyzer`）
@@ -63,16 +63,46 @@ Epic #1 の横断ルールは「解析 → IR → 方式決定 → モード別�
 
 `core` に Gson（Apache-2.0）を追加した。JSON の読み書きを自作すると、不正入力の処理で不具合を作りやすい。Gson は Minecraft 本体も使う定番ライブラリである。
 
+### 実行時レジストリ（`platform-fabric`、形式 `modbridge.runtime-registry` 版 1）
+
+静的解析では、コードでだけ登録され素材を持たない定義が見つからない。そこで Mode A 用に、Fabric 専用サーバー上でレジストリを書き出す取得 MOD を作った。
+
+- **取得 MOD**: `platform-fabric/`（独立ビルド、MOD ID `modbridge_registry_dump`、環境は `server`）。サーバーの起動完了（`SERVER_STARTED`）後に、アイテム・ブロックのレジストリとレシピの一覧を書き出す。
+  - JVM 引数 `-Dmodbridge.registryDump=<file>` を付けたときだけ動く。付けなければ何もしないので、入れたままでも害は無い。
+  - `-Dmodbridge.registryDump.stop=true` で、書き出した後にサーバーを止める。
+  - 出力は決定的にする（ソート済み、時刻・パスなし）。`minecraft` 名前空間は含めない。読み込まれていた MOD の ID と版（同梱 JAR の MOD を含む）も記録する。
+  - 書き出しに失敗してもサーバーは止めない。呼出し側はファイルが無いことで検出する（スパイクのスクリプトは失敗として扱う）。
+- **読込**（`RuntimeRegistry.read`）: 64 MiB まで。スキーマ・版・各欄の型、`registry`（item / block / recipe）、識別子の形式を検証し、不正なら `RUNTIME_REGISTRY_INVALID`（ERROR）。読めなければ `IO_ERROR`（ERROR）。ファイルは `inputs` に SHA-256 付きで記録する。
+- **突き合わせ**（`RuntimeDiff`、CLI は `scan` / `validate` の `--runtime FILE`）:
+
+  | 状況 | 結果 |
+  |---|---|
+  | 静的・実行時の両方にある | 属性 `runtime=registered` |
+  | 実行時にだけある | `RUNTIME_REGISTRY` の定義として追加し、`CODE_ONLY_DEFINITION`（WARN） |
+  | 静的にだけある | `STATIC_ONLY`（WARN。名前の違い、条件付き登録、削除された定義など） |
+  | 入力した MOD が取得時に読み込まれていない | `MOD_NOT_LOADED`（WARN）。その MOD は `STATIC_ONLY` の判定から外す |
+  | 入力していない MOD の名前空間の登録 | 名前空間ごとの件数だけを `RUNTIME_OUTSIDE_INPUT`（INFO）で示す。一部の MOD だけを解析したときに誤検知を出さないため |
+  | 取得したサーバーの Minecraft の版が対象と違う | `RUNTIME_MINECRAFT_MISMATCH`（WARN） |
+
+  対象にする名前空間は、入力した MOD の ID と、入力した MOD の定義が使う名前空間だけ。
+- **方式の計画**: 実行時にだけある定義は、Mode A を `AUTO`（Geyser が登録する。見た目は変換されない）、Mode B を `UNSUPPORTED`（生成元の素材が無い）にする。状態は UNTESTED のまま。
+
 ## 実測（2026-11-27）
 
-- 単体テスト 38 件が成功（`./gradlew build` の集計）。対象は壊れた JAR、ZIP Slip、ZIP 爆弾（圧縮率・上限）、重複 MOD ID、重複定義、依存の欠落と循環とその伝播、`provides`、同梱 JAR の MOD ID と展開量の上限、素材の欠落、NeoForge・メタデータなし、オブジェクトでない・型の違う `fabric.mod.json`、JAR が 0 件、同名の入力、診断に絶対パスを含まないこと、不正な IR の拒否、IR の往復、CLI の終了コード、原子的書き出しの成功と失敗。
+- 単体テスト 41 件が成功（`./gradlew build` の集計）。対象は壊れた JAR、ZIP Slip、ZIP 爆弾（圧縮率・上限）、重複 MOD ID、重複定義、依存の欠落と循環とその伝播、`provides`、同梱 JAR の MOD ID と展開量の上限、実行時レジストリとの突き合わせ（実行時のみ・静的のみ・未読込の MOD・入力外の名前空間・版の違い・不正な形式）、素材の欠落、NeoForge・メタデータなし、オブジェクトでない・型の違う `fabric.mod.json`、JAR が 0 件、同名の入力、診断に絶対パスを含まないこと、不正な IR の拒否、IR の往復、CLI の終了コード、原子的書き出しの成功と失敗。
 - 実際の fixture JAR（`pmb-fabric-fixture-0.0.1.jar`）から、ITEM 2、BLOCK 1 を推定した。fixture を単体で指定すると、`fabric-api` が入力に無いため `DEPENDENCY_MISSING` になり、fail closed になる。これは想定どおりの動作である。
 - スパイク環境の `mods/` 一式（Fabric API、Geyser、Hydraulic、fixture）では、ERROR 0 件・WARN 0 件で解析できた。Fabric API は同梱 JAR 44 個から MOD ID 45 個（`fabric-api-base` などのモジュール）を取り出した。
+- 実行時レジストリ: fixture に素材を持たないアイテム `pmb_fixture:code_only_marker` を足し、スパイクのサーバーで取得した。
+  - 書き出しは Geyser の起動完了の直後で、ファイルは 9 KB（MOD 102 件、`pmb_fixture` のアイテム 3・ブロック 1）。
+  - `modbridge validate mods/ --runtime registry-dump.json` は ERROR 0 / WARN 1。WARN は `CODE_ONLY_DEFINITION pmb_fixture:code_only_marker` だけで、残りの 3 定義は両方で一致した。
+  - Geyser はカスタムアイテムを 3 個登録した（`Registered 3 custom items`）。一方で、サーバーログには `Failed to find path for item pmb_fixture:code_only_marker, skipping`（WARN）が出て、Hydraulic の変換対象は 2 個だった（`Items to convert: 2`）。素材の無い定義は、Mode A でも見た目が変換されない。Bedrock 側でどう見えるかは未検証。
 - 中身が 190 MB のゼロの同梱 JAR を 20 個持つ JAR（3.7 MB）は、修正前は警告なしで 4.7 秒かかった。修正後は 0.64 秒で打ち切り、20 個とも `NESTED_JAR_UNREADABLE` になった。
 
 ## 未実装・既知の制約
 
-- **実行時レジストリの取得と静的・動的の差分**（#3 の受け入れ条件の一部）は未実装。コードでだけ登録され素材を持たない定義は、静的解析では見つからない。Mode A 用に、Fabric サーバー上でレジストリを書き出す取得 MOD（`platform-fabric`）を別 PR で追加し、`RUNTIME_REGISTRY` の定義と突き合わせる。
+- 実行時レジストリは、Fabric の Mode A 用だけ。取得にはサーバーの起動が要るので、CI ではビルドだけを確認する。サーバーの起動には Minecraft EULA への同意が要り、その判断は owner にあるため、CI では起動しない。
+- 実行時レジストリはアイテム・ブロック・レシピだけ。エンティティ・タグ・バイオームなどは対象外。
+- 名前空間が MOD ID と違い、素材も持たない定義は、突き合わせの対象にならない（`RUNTIME_OUTSIDE_INPUT` の件数にだけ現れる）。
 - 同梱 JAR（jar-in-jar）は、MOD ID と `provides` だけを読む。中の素材・定義は解析せず、同梱 JAR の中にさらに同梱された JAR も読まない。
 - バージョン範囲（`depends` の値）は評価せず、宣言のまま記録する。
 - タグ、ルートテーブルの中身、エンティティは未対応（エンティティは v0.5.0）。

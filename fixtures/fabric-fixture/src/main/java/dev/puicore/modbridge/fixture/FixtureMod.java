@@ -23,6 +23,8 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code pmb_fixture:test_ingot} — 単純なアイテム（スタック上限 16）</li>
  *   <li>{@code pmb_fixture:test_block} — 単純な立方体ブロックとそのアイテム。ツルハシで壊すとドロップする
  *       （{@code minecraft:mineable/pickaxe} タグ）</li>
+ *   <li>{@code pmb_fixture:code_only_marker} — 素材ファイル（items・モデル・テクスチャ・lang）を意図的に持たないアイテム。
+ *       静的解析では見つからず、実行時レジストリでだけ見つかる定義の検証用</li>
  * </ul>
  */
 public final class FixtureMod implements ModInitializer {
@@ -32,6 +34,7 @@ public final class FixtureMod implements ModInitializer {
     public static final ResourceKey<Item> TEST_INGOT_KEY = ResourceKey.create(Registries.ITEM, id("test_ingot"));
     public static final ResourceKey<Block> TEST_BLOCK_KEY = ResourceKey.create(Registries.BLOCK, id("test_block"));
     public static final ResourceKey<Item> TEST_BLOCK_ITEM_KEY = ResourceKey.create(Registries.ITEM, id("test_block"));
+    public static final ResourceKey<Item> CODE_ONLY_KEY = ResourceKey.create(Registries.ITEM, id("code_only_marker"));
 
     public static Item testIngot;
     public static Block testBlock;
@@ -42,6 +45,7 @@ public final class FixtureMod implements ModInitializer {
         testBlock = registerBlock(TEST_BLOCK_KEY, Block::new,
                 BlockBehaviour.Properties.of().strength(1.5f, 6.0f).sound(SoundType.METAL).requiresCorrectToolForDrops());
         registerItem(TEST_BLOCK_ITEM_KEY, p -> new BlockItem(testBlock, p), new Item.Properties().useBlockDescriptionPrefix());
+        registerItem(CODE_ONLY_KEY, Item::new, new Item.Properties());
 
         CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(tab -> tab.accept(testIngot));
         CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.BUILDING_BLOCKS).register(tab -> tab.accept(testBlock.asItem()));

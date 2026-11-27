@@ -11,7 +11,9 @@ import dev.puicore.modbridge.core.ir.BridgeIr.Method;
 import dev.puicore.modbridge.core.ir.BridgeIr.Mode;
 import dev.puicore.modbridge.core.ir.BridgeIr.ModDescriptor;
 import dev.puicore.modbridge.core.ir.BridgeIr.Severity;
+import dev.puicore.modbridge.core.ir.BridgeIr.Source;
 import dev.puicore.modbridge.core.ir.BridgeIr.Status;
+import dev.puicore.modbridge.core.runtime.RuntimeRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -46,8 +48,30 @@ public final class Analyzer {
      * 1 つの JAR で想定外の例外が起きても、その JAR を INTERNAL_ERROR にして残りの解析を続ける。
      */
     public static BridgeIr analyzePaths(List<Path> paths) {
+        return analyzePaths(paths, null);
+    }
+
+    /**
+     * {@link #analyzePaths(List)} に加えて、実行時レジストリ（platform-fabric の取得結果）と突き合わせる。
+     *
+     * @param runtime 実行時レジストリのファイル。null なら突き合わせない
+     */
+    public static BridgeIr analyzePaths(List<Path> paths, Path runtime) {
         List<Path> jars = new ArrayList<>();
         List<Diagnostic> diags = new ArrayList<>();
+        RuntimeRegistry rt = null;
+        InputFile rtInput = null;
+        if (runtime != null) {
+            String label = String.valueOf(runtime.getFileName());
+            try {
+                rt = RuntimeRegistry.read(runtime);
+                rtInput = new InputFile(rt.fileName(), rt.sha256(), rt.size());
+            } catch (IOException e) {
+                diags.add(new Diagnostic(Severity.ERROR, "IO_ERROR", label, "実行時レジストリを読めない（" + e.getClass().getSimpleName() + "）"));
+            } catch (IllegalArgumentException e) {
+                diags.add(new Diagnostic(Severity.ERROR, "RUNTIME_REGISTRY_INVALID", label, e.getMessage()));
+            }
+        }
         for (Path p : paths) {
             String label = String.valueOf(p.getFileName());
             if (Files.isDirectory(p)) {
@@ -68,7 +92,7 @@ public final class Analyzer {
         }
         if (jars.size() > MAX_INPUTS) {
             diags.add(new Diagnostic(Severity.ERROR, "INPUT_LIMIT_EXCEEDED", "-", "JAR が多すぎる（" + jars.size() + " 個、上限 " + MAX_INPUTS + "）"));
-            return analyze(List.of(), List.of(), diags);
+            return analyze(List.of(), List.of(), diags, null);
         }
         // 並びはファイル名 → 絶対パス（出力には入れない。同名ファイルの処理順を固定するためだけに使う）
         jars.sort(Comparator.comparing((Path f) -> f.getFileName().toString()).thenComparing(f -> f.toAbsolutePath().toString()));
@@ -97,10 +121,13 @@ public final class Analyzer {
             }
             inputs.add(input);
         }
-        return analyze(inputs, scans, diags);
+        if (rtInput != null) {
+            inputs.add(rtInput);
+        }
+        return analyze(inputs, scans, diags, rt);
     }
 
-    static BridgeIr analyze(List<InputFile> inputs, List<JarScanner.JarScan> scans, List<Diagnostic> preDiags) {
+    static BridgeIr analyze(List<InputFile> inputs, List<JarScanner.JarScan> scans, List<Diagnostic> preDiags, RuntimeRegistry rt) {
         List<Diagnostic> diags = new ArrayList<>(preDiags);
         List<ModDescriptor> mods = new ArrayList<>();
         List<Definition> defs = new ArrayList<>();
@@ -108,6 +135,9 @@ public final class Analyzer {
             mods.addAll(s.mods());
             defs.addAll(s.definitions());
             diags.addAll(s.diagnostics());
+        }
+        if (rt != null) {
+            defs = RuntimeDiff.merge(mods, defs, rt, diags);
         }
 
         // 同じ MOD ID を持つ JAR が複数ある
@@ -231,6 +261,15 @@ public final class Analyzer {
             }
             Set<String> warns = warnSubjects.getOrDefault(d.id(), Set.of());
             String note = warns.isEmpty() ? "" : "（警告: " + String.join(", ", warns) + "）";
+            if (d.source() == Source.RUNTIME_REGISTRY) {
+                // 素材が無い定義。Mode A の実測では、Geyser はカスタムアイテムとして登録したが、
+                // Hydraulic は「パスが見つからない」としてスキップした（ADR-0003）
+                plans.add(new FeaturePlan(subject, Mode.A, Method.AUTO, Status.UNTESTED, d.kind() == Kind.RECIPE
+                        ? "Java サーバーがレシピを処理する"
+                        : "Geyser が登録するが、素材が無いため Hydraulic は見た目を変換しない（コードでだけ登録）"));
+                plans.add(new FeaturePlan(subject, Mode.B, Method.UNSUPPORTED, Status.UNTESTED, "素材・定義ファイルが無いため生成できない（コードでだけ登録）"));
+                continue;
+            }
             switch (d.kind()) {
                 case ITEM, BLOCK -> {
                     plans.add(new FeaturePlan(subject, Mode.A, Method.AUTO, Status.UNTESTED, "Geyser + Hydraulic のカスタム定義とパック変換" + note));

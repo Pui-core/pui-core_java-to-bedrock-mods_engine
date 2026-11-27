@@ -44,13 +44,17 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
             // Geyser の初期化（MOD の初期化時）が済んだ後に登録する
             ServerLifecycleEvents.SERVER_STARTING.register(server -> {
                 try {
+                    if (Boolean.getBoolean("modbridge.gate.testFailRegistration")) {
+                        throw new IllegalStateException("試験用: 登録の失敗を起こした（-Dmodbridge.gate.testFailRegistration）");
+                    }
                     GeyserGate.register(DECISION);
                 } catch (Throwable e) { // Geyser の版違いによる LinkageError なども含める
                     if (policy == Policy.STRICT) {
-                        // 断れないまま Bedrock を受け付けることになるので、起動をやめる（fail closed）
-                        LOG.error("[modbridge] Geyser の接続ゲートを登録できないため、サーバーを止める。"
+                        // 断れないまま Bedrock を受け付けることになるので、起動を中断する（fail closed）。
+                        // halt では止まるまでに Geyser の待受（SERVER_STARTED）が始まりうるので、例外で起動処理ごと止める
+                        LOG.error("[modbridge] Geyser の接続ゲートを登録できないため、サーバーの起動を中断する。"
                                 + "Bedrock を制限せずに起動するには -Dmodbridge.gate=permissive か off を付ける", e);
-                        server.halt(false);
+                        throw new IllegalStateException("modbridge: 接続ゲートを登録できない（strict）", e);
                     } else {
                         LOG.error("[modbridge] Geyser の接続ゲートを登録できない（permissive のため起動は続ける。Bedrock の接続は制限されない）", e);
                     }

@@ -35,7 +35,8 @@
 - **記録**: 判定の根拠の IR を `config/modbridge/gate-report.json` に書き、判定と理由（最大 20 件）をサーバーログに出す。接続を断ったプレイヤーの名前は記録しない。
 - **Geyser が無いとき**: ゲートは使わない（Bedrock の接続自体が無い）。
 - **Geyser があるのに登録できないとき**（API が無い、版違いによる `LinkageError` など。例外はすべて捕まえる）:
-  - `strict` では、サーバーを止める。断れないまま Bedrock を受け付けることになるため（fail closed）。止めずに起動するには、方針を `permissive` か `off` にする。
+  - `strict` では、`SERVER_STARTING` から例外を投げて、サーバーの起動を中断する。断れないまま Bedrock を受け付けることになるため（fail closed）。`server.halt` では、止まるまでに Geyser の待受（`SERVER_STARTED`）が始まりうるので使わない。止めずに起動するには、方針を `permissive` か `off` にする。
+  - 試験用に、`-Dmodbridge.gate.testFailRegistration=true` で登録の失敗を起こせる。
   - `permissive` では、ERROR をログに出して起動を続ける。この場合、Bedrock の接続は制限されない。
 - **解析の失敗**: `Error` を含むすべての例外を捕まえ、判定は準備中のまま（Bedrock を断ったまま）にし、その旨をログに出す。
 - **core の取り込み**: `platform-fabric` の settings で `includeBuild('..')` し、core を JAR に同梱する（Loom の `include`）。Gson は Minecraft 本体のものを使うので同梱しない。
@@ -52,6 +53,7 @@
 - **`mods/` の外から MOD を足した構成**（`-Dfabric.addMods` で、メタデータだけの MOD `outside_probe` を足した）:
   - `allowBedrock=false critical=1` と、理由 `MOD_NOT_ANALYZED outside_probe` が出た。
   - この検査を最初に入れたときは、Minecraft 本体・Java・Fabric Loader も `mods/` の外にあるとして断る誤判定が出た。そこで、これらを除くようにした（Fabric Loader の種類は `builtin` ではないため、ID でも除く）。直した後の通常の構成では、`allowBedrock=true critical=0` に戻った。
+- **登録の失敗**（`-Dmodbridge.gate.testFailRegistration=true`、strict）: `SERVER_STARTING` で起動が中断され、クラッシュレポートを残して停止した。Geyser の読み込みと待受のログは 1 行も出なかった。ゲートが無いまま Bedrock のポートが開く隙は無かった。
 - 登録は `PostOrder.LAST` で行われた（ログ `Geyser の SessionLoginEvent に登録した（PostOrder.LAST）`）。
 - 単体テスト（`ConnectionGateTest`）: 方針ごとの判定、ADAPTER と Mode B の非対応を理由にしないこと、準備中は断ること、未知の方針を STRICT にすること、解析の対象外の MOD を理由にすること、理由の件数の上限。
 

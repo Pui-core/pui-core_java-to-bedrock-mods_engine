@@ -2,8 +2,8 @@
 
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
-> **現在の状態: v0.0.1（開発基盤・技術検証）**
-> 互換機能はまだありません。今あるのはビルド基盤、`doctor` CLI、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
+> **現在の状態: v0.0.1 → v0.1.0 開発中**
+> 変換機能はまだありません。今あるのはビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、検証用の fixture MOD、接続スパイク用スクリプトです。任意の MOD の互換は保証しません。
 
 ## 対応モード
 
@@ -27,7 +27,17 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 ./gradlew :cli:installDist      # cli/build/install/modbridge/bin/modbridge を生成
 ```
 
-`modbridge` の終了コードは `0`=成功、`1`=診断失敗、`2`=使い方の誤りです。
+### MOD の解析と診断
+
+```sh
+modbridge validate mods/                       # フォルダー直下の *.jar（大文字の .JAR も含む）をまとめて診断
+modbridge scan mods/ --out build/ir.json       # Bridge IR（JSON）を書き出す
+modbridge report build/ir.json                 # 方式と検証状態の一覧を表示
+```
+
+JAR は展開せず、コードも実行しません（静的解析）。IR の形式と診断コードの一覧は [ADR-0003](docs/adr/0003-bridge-ir-and-static-scan.md) にあります。計画上の状態は、実機で検証されるまですべて `UNTESTED` です。
+
+`modbridge` の終了コードは `0`=成功、`1`=ERROR 診断あり（読めない JAR、JAR が 1 つも無い場合を含む）または不正な IR、`2`=使い方の誤り、`3`=IR の書き出しと IR ファイルの読込の失敗です。
 
 ## fixture MOD
 
@@ -62,7 +72,7 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --keep-running  # Bedrock 実
 ## 構成
 
 ```text
-core/        IR・診断などの Minecraft 非依存部分（現状は対象バージョンと doctor）
+core/        Bridge IR・静的解析・診断などの Minecraft 非依存部分
 cli/         modbridge コマンド
 fixtures/    検証用 fixture MOD（独立ビルド）
 scripts/     スパイク・検証用スクリプト

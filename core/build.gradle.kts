@@ -1,6 +1,8 @@
 plugins { `java-library` }
 
 dependencies {
+    // JSON の読み書き（fabric.mod.json・素材 JSON・IR）。core の唯一の実行時依存。
+    api(libs.gson)
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)

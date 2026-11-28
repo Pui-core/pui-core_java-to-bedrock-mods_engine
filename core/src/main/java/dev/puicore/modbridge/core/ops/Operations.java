@@ -9,6 +9,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,6 +31,7 @@ public final class Operations {
     private static final Gson GSON = new GsonBuilder().setStrictness(Strictness.STRICT).setPrettyPrinting().create();
     private static final int MAX_CONFIG_BYTES = 65_536;
     private static final int TIMEOUT_MS = 1_500;
+    private static final int RAKNET_TIMEOUT_MS = 1_200;
     private static final Pattern ID = Pattern.compile("[a-z][a-z0-9_-]{0,39}");
     private static final Pattern HOST = Pattern.compile("(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*");
     private static final byte[] RAKNET_MAGIC = HexFormat.of().parseHex("00ffff00fefefefefdfdfdfd12345678");
@@ -42,9 +44,15 @@ public final class Operations {
     public record Endpoint(String host, int port) {
         void validate(String field) {
             if (host == null || host.length() > 253 || !HOST.matcher(host).matches() || host.equals("0.0.0.0")
-                    || port < 1 || port > 65_535) {
+                    || (host.matches("[0-9.]+") && !ipv4(host)) || port < 1 || port > 65_535) {
                 throw new IllegalArgumentException(field + " は IPv4 または DNS 名と有効なポートにする");
             }
+        }
+
+        private static boolean ipv4(String host) {
+            String[] parts = host.split("\\.", -1);
+            return parts.length == 4 && Arrays.stream(parts).allMatch(
+                    part -> part.matches("0|[1-9][0-9]{0,2}") && Integer.parseInt(part) <= 255);
         }
 
         String key() {
@@ -91,6 +99,7 @@ public final class Operations {
 
         Set<String> ids = new HashSet<>();
         Set<String> clients = new HashSet<>();
+        Set<String> probes = new HashSet<>();
         Set<String> state = new HashSet<>();
         for (Backend backend : plan.backends()) {
             if (backend == null || backend.id() == null || !ID.matcher(backend.id()).matches() || !ids.add(backend.id())
@@ -101,7 +110,10 @@ public final class Operations {
             backend.client().validate(backend.id() + " の client");
             backend.probe().validate(backend.id() + " の probe");
             if (!clients.add(backend.client().key()) || !state.add(backend.stateDirectory())) {
-                throw new IllegalArgumentException("クライアント接続先とワールドの保存先はバックエンドごとに分ける");
+                throw new IllegalArgumentException("クライアント接続先と保存先の識別名はバックエンドごとに分ける");
+            }
+            if (!probes.add(backend.transport() + ":" + backend.probe().key())) {
+                throw new IllegalArgumentException("同じプロトコルの監視先が重複している: " + backend.id());
             }
             if (plan.topology() == Topology.UDP_FORWARD && backend.transport() != Transport.RAKNET) {
                 throw new IllegalArgumentException("UDP_FORWARD には RakNet のバックエンドが必要: " + backend.id());
@@ -168,28 +180,36 @@ public final class Operations {
     private static void rakNetPing(InetSocketAddress endpoint) throws IOException {
         try (var socket = new DatagramSocket()) {
             socket.connect(endpoint);
-            socket.setSoTimeout(TIMEOUT_MS);
+            socket.setSoTimeout(RAKNET_TIMEOUT_MS);
             long timestamp = System.nanoTime();
             byte[] ping = ByteBuffer.allocate(33).put((byte) 0x01).putLong(timestamp).put(RAKNET_MAGIC).putLong(0).array();
-            socket.send(new DatagramPacket(ping, ping.length));
-            byte[] received = new byte[2_048];
-            DatagramPacket response = new DatagramPacket(received, received.length);
-            socket.receive(response);
-            var bytes = ByteBuffer.wrap(received, 0, response.getLength());
-            if (bytes.remaining() < 35 || bytes.get() != 0x1c || bytes.getLong() != timestamp) {
-                throw new IOException("RakNet pong のヘッダーが不正");
+            try {
+                receivePong(socket, timestamp, ping);
+            } catch (SocketTimeoutException timeout) {
+                receivePong(socket, timestamp, ping);
             }
-            bytes.getLong(); // サーバー GUID
-            byte[] magic = new byte[RAKNET_MAGIC.length];
-            bytes.get(magic);
-            int size = Short.toUnsignedInt(bytes.getShort());
-            if (!Arrays.equals(magic, RAKNET_MAGIC) || size != bytes.remaining() || size < 5 || size > 1024) {
-                throw new IOException("RakNet pong の本文が不正");
-            }
-            String motd = new String(received, bytes.position(), size, StandardCharsets.UTF_8);
-            if (!motd.startsWith("MCPE;")) {
-                throw new IOException("Bedrock の応答ではない");
-            }
+        }
+    }
+
+    private static void receivePong(DatagramSocket socket, long timestamp, byte[] ping) throws IOException {
+        socket.send(new DatagramPacket(ping, ping.length));
+        byte[] received = new byte[2_048];
+        DatagramPacket response = new DatagramPacket(received, received.length);
+        socket.receive(response);
+        var bytes = ByteBuffer.wrap(received, 0, response.getLength());
+        if (bytes.remaining() < 35 || bytes.get() != 0x1c || bytes.getLong() != timestamp) {
+            throw new IOException("RakNet pong のヘッダーが不正");
+        }
+        bytes.getLong(); // サーバー GUID
+        byte[] magic = new byte[RAKNET_MAGIC.length];
+        bytes.get(magic);
+        int size = Short.toUnsignedInt(bytes.getShort());
+        if (!Arrays.equals(magic, RAKNET_MAGIC) || size != bytes.remaining() || size < 5 || size > 1024) {
+            throw new IOException("RakNet pong の本文が不正");
+        }
+        String motd = new String(received, bytes.position(), size, StandardCharsets.UTF_8);
+        if (!motd.startsWith("MCPE;")) {
+            throw new IOException("Bedrock の応答ではない");
         }
     }
 }

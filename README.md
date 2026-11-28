@@ -11,7 +11,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 2人の同時入場と試験用ブロックの設置・破壊の同期を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
 | B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材、レシピ、フォーム加工を確認。公式 BDS 1.26.66.1 の Windows と WSL Ubuntu で配置・更新・復旧を確認（[ADR-0006](docs/adr/0006-mode-b-behavior-pack.md)） |
-| C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
+| C: プロキシ・複数サーバー | Geyser/Fabric と独立 BDS | 配置設定の検査、接続先の監視、明示的な Bedrock 移動。実機試験は後日 |
 
 ## 必要なもの
 
@@ -181,7 +181,7 @@ Geyser/Fabric の MOD サーバーと BDS は、認証設定、パック、ワ�
 - **VPS から自宅・WSL へ転送**する場合は、RakNet の公開 UDP ポートを private ネットワーク内の1台・1ポートへ対応付け、戻りの通信も同じ経路に通します。`UDP_FORWARD` は RakNet を対象とします。NetherNet のシグナリングは別です。バックエンドの入口は VPS または VPN からだけ到達できるようにし、公開側とバックエンド側から別々に監視します。
 - **サーバー間の移動**は `BEDROCK_TRANSFER` で運用者が登録した接続先へ、Bedrock クライアントが新しく接続します。移動先で改めて入場判定とパック受け入れが行われます。ワールドや持ち物は各バックエンドのデータを使います。移動を受け付けない端末ではサーバー一覧から接続します。
 
-運用設定の例です。`client` はプレイヤーの端末から接続できるアドレス、`probe` は監視を実行する場所から到達できるアドレスです。`stateDirectory` は配備先の保存ディレクトリを区別する名前です。実際のサービスにも、それぞれ異なる作業・保存ディレクトリを指定します。
+運用設定の例です。`client` はプレイヤーの端末から接続できるアドレス、`probe` は監視を実行する場所から到達できるアドレスです。同じ通信方式で同じ監視先は登録できません。DNS の別名が同じサーバーを指すかは配備時に確認します。`stateDirectory` は配備先の保存ディレクトリを区別する名前です。実際のサービスにも、それぞれ異なる作業・保存ディレクトリを指定します。
 
 ```json
 {
@@ -213,7 +213,7 @@ modbridge ops-check /etc/modbridge/topology.json
 modbridge ops-check /etc/modbridge/topology.json --probe
 ```
 
-`--probe` は、RakNet では Bedrock のオフライン ping、NetherNet では設定先の TCP 接続の成否をバックエンドごとに JSON へ出力します。観測先が1件でも応答しなければ終了コード1を返します。入場・ワールドの読込・パック適用は実クライアントで確認します。Geyser/Fabric で `-Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric` を付けると、認証済みの Bedrock セッションから `/modbridge-travel bedrock` を実行できます。
+`--probe` は、RakNet では Bedrock のオフライン ping、NetherNet では設定先の TCP 接続の成否をバックエンドごとに JSON へ出力します。観測先が1件でも応答しなければ終了コード1を返します。TCP 接続に成功しても、NetherNet の WebRTC 経路や入場、ワールドの読込、パック適用は実クライアントで確認します。サンプルの Fabric 側では Geyser の transport を raknet または both に設定します。Geyser/Fabric で `-Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric` を付けると、認証済みの Bedrock セッションから `/modbridge-travel bedrock` を実行できます。
 
 Linux の Fabric サーバー用 systemd の例です。`fabric` 専用のサービスアカウントを使い、ほかのワールドは別ユニットで管理します。
 
@@ -231,6 +231,7 @@ ExecStart=/usr/bin/java -Dmodbridge.travelConfig=/etc/modbridge/topology.json -D
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=90
+SuccessExitStatus=143
 NoNewPrivileges=true
 
 [Install]

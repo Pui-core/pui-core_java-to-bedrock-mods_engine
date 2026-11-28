@@ -29,7 +29,7 @@ class OperationsTest {
     private static final String LOOPBACK = "127.0.0.1";
 
     @Test
-    void 独立した保存先でしか移動を構成できない() {
+    void 移動構成で宣言上の保存先が重複すると拒否する() {
         Backend origin = backend("origin", Transport.NETHERNET, 19132, "origin");
         Backend target = backend("target", Transport.RAKNET, 19142, "target");
         var result = Operations.check(new Plan(1, Topology.BEDROCK_TRANSFER, List.of(origin, target)), false);
@@ -41,6 +41,19 @@ class OperationsTest {
                 () -> Operations.check(new Plan(1, Topology.BEDROCK_TRANSFER, List.of(origin, shared)), false));
         assertThrows(IllegalArgumentException.class,
                 () -> Operations.check(new Plan(1, Topology.UDP_FORWARD, List.of(origin)), false));
+    }
+
+    @Test
+    void 同じプロトコルの監視先が重複すると拒否する() {
+        Backend origin = backend("origin", Transport.RAKNET, 19132, "origin");
+        Backend target = new Backend("target", Kind.GEYSER, Transport.RAKNET, new Endpoint(LOOPBACK, 19142),
+                origin.probe(), "target");
+        assertThrows(IllegalArgumentException.class,
+                () -> Operations.check(new Plan(1, Topology.BEDROCK_TRANSFER, List.of(origin, target)), false));
+        Backend tcp = new Backend("target", Kind.BDS, Transport.NETHERNET, target.client(), origin.probe(), "target");
+        assertTrue(Operations.check(new Plan(1, Topology.BEDROCK_TRANSFER, List.of(origin, tcp)), false).reachable());
+        assertThrows(IllegalArgumentException.class, () -> new Endpoint("0", 19132).validate("probe"));
+        assertThrows(IllegalArgumentException.class, () -> new Endpoint("999.0.0.1", 19132).validate("client"));
     }
 
     @Test
@@ -59,16 +72,20 @@ class OperationsTest {
 
     @Test
     void RakNetの応答を検証する() throws Exception {
-        assertTrue(rakNetLoopback(true).reachable());
-        assertFalse(rakNetLoopback(false).reachable());
+        assertTrue(rakNetLoopback(true, true).reachable());
+        assertFalse(rakNetLoopback(false, false).reachable());
     }
 
-    private static Operations.Result rakNetLoopback(boolean bedrock) throws Exception {
+    private static Operations.Result rakNetLoopback(boolean bedrock, boolean loseFirst) throws Exception {
         try (var server = new DatagramSocket(new InetSocketAddress(LOOPBACK, 0))) {
             server.setSoTimeout(3000);
             var responder = new FutureTask<Void>(() -> {
                 var request = new DatagramPacket(new byte[256], 256);
                 server.receive(request);
+                if (loseFirst) {
+                    request.setLength(request.getData().length);
+                    server.receive(request);
+                }
                 assertEquals(33, request.getLength());
                 var buffer = ByteBuffer.wrap(request.getData());
                 assertEquals(1, buffer.get());

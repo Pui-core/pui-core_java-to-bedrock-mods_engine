@@ -20,6 +20,7 @@
 		"fabric-networking-api-v1": "*"
 	},
 	"suggests": {
-		"geyser-fabric": "*"
+		"geyser-fabric": "*",
+		"fabric-command-api-v2": "*"
 	}
 }

@@ -28,6 +28,8 @@ final class ServerTravel {
             throw new IllegalArgumentException("BEDROCK_TRANSFER とこの Geyser バックエンドの ID を指定する");
         }
 
+        ModBridgeFabric.LOG.info("[modbridge] Bedrock travel origin={} destinations={}", origin,
+                plan.backends().stream().map(Operations.Backend::id).filter(id -> !id.equals(origin)).toList());
         CommandRegistrationCallback.EVENT.register((dispatcher, access, environment) -> {
             var command = Commands.literal("modbridge-travel");
             for (var destination : plan.backends()) {

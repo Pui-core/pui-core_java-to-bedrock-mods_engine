@@ -47,6 +47,9 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
             if (!geyser) {
                 throw new IllegalStateException("Bedrock 移動には Geyser-Fabric が必要");
             }
+            if (!FabricLoader.getInstance().isModLoaded("fabric-command-api-v2")) {
+                throw new IllegalStateException("Bedrock 移動には Fabric Command API v2 が必要");
+            }
             ServerTravel.install(travelConfig, travelOrigin);
         }
         if (geyser) {

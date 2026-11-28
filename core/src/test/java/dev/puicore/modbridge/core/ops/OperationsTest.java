@@ -41,6 +41,9 @@ class OperationsTest {
                 () -> Operations.check(new Plan(1, Topology.BEDROCK_TRANSFER, List.of(origin, shared)), false));
         assertThrows(IllegalArgumentException.class,
                 () -> Operations.check(new Plan(1, Topology.UDP_FORWARD, List.of(origin)), false));
+        assertTrue(Operations.check(new Plan(1, Topology.NETHERNET_FORWARD, List.of(origin)), false).reachable());
+        assertThrows(IllegalArgumentException.class,
+                () -> Operations.check(new Plan(1, Topology.NETHERNET_FORWARD, List.of(target)), false));
     }
 
     @Test

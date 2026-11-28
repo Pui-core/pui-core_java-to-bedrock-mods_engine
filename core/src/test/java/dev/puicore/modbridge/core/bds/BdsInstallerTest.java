@@ -23,6 +23,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -275,6 +276,96 @@ class BdsInstallerTest {
         assertEquals(before, restoredContents());
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, "../../etc", true));
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, false));
+    }
+
+    @Test
+    void リンク経由で別フォルダーに共有パックを配置できない() throws Exception {
+        Path external = Files.createDirectories(dir.resolve("other-profile"));
+        Path marker = Files.writeString(external.resolve("keep.txt"), "keep");
+        linkDirectory(bds.resolve("behavior_packs"), external);
+        Map<String, String> before = snapshot();
+
+        var plan = BdsInstaller.plan(bds, packs, null);
+        assertFalse(plan.ok());
+        assertTrue(plan.problems().getFirst().contains("behavior_packs"));
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+        assertEquals(before, snapshot());
+        assertFalse(Files.exists(external.resolve(BdsInstaller.BP_DIR)));
+        assertEquals("keep", Files.readString(marker));
+    }
+
+    @Test
+    void リンク経由で別フォルダーにバックアップを作らない() throws Exception {
+        Path external = Files.createDirectories(dir.resolve("other-saves"));
+        linkDirectory(bds.resolve(BdsInstaller.BACKUP_DIR), external);
+        assertFalse(BdsInstaller.plan(bds, packs, null).ok());
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+        try (Stream<Path> files = Files.list(external)) {
+            assertEquals(List.of(), files.toList());
+        }
+    }
+
+    @Test
+    void リンク経由で別フォルダーの共有パックをrollbackできない() throws Exception {
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Path behavior = bds.resolve("behavior_packs");
+        Path external = Files.move(behavior, dir.resolve("another-profile-packs"));
+        linkDirectory(behavior, external);
+        Path manifest = external.resolve(BdsInstaller.BP_DIR).resolve("manifest.json");
+        String before = Files.readString(manifest);
+
+        var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+        assertTrue(error.getMessage().contains("behavior_packs"));
+        assertEquals(before, Files.readString(manifest));
+    }
+
+    @Test
+    void リンク経由のバックアップを復旧に使わない() throws Exception {
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Path backup = bds.resolve(BdsInstaller.BACKUP_DIR).resolve(id);
+        Path external = Files.move(backup, dir.resolve("exported-backup"));
+        linkDirectory(backup, external);
+        Map<String, String> before = snapshot();
+
+        var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+        assertTrue(error.getMessage().contains(BdsInstaller.BACKUP_DIR));
+        assertEquals(before, snapshot());
+        assertTrue(Files.isRegularFile(external.resolve("backup.json")));
+    }
+
+    @Test
+    void 配置前のバックアップでワールド内のリンクを拒否する() throws Exception {
+        Path external = Files.createDirectories(dir.resolve("other-save-data"));
+        Files.writeString(external.resolve("keep.txt"), "keep");
+        linkDirectory(world.resolve("external-data"), external);
+
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+        assertFalse(Files.exists(bds.resolve("behavior_packs").resolve(BdsInstaller.BP_DIR)));
+        assertEquals("keep", Files.readString(external.resolve("keep.txt")));
+    }
+
+    @Test
+    void rollback後に古いワールドを片付けるときリンク先を消さない() throws Exception {
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Path external = Files.createDirectories(dir.resolve("other-save-data"));
+        Path marker = Files.writeString(external.resolve("keep.txt"), "keep");
+        Path linked = world.resolve("external-data");
+        linkDirectory(linked, external);
+
+        BdsInstaller.rollback(bds, id, true);
+        assertFalse(Files.exists(linked));
+        assertEquals("keep", Files.readString(marker));
+    }
+
+    private static void linkDirectory(Path link, Path target) throws Exception {
+        if (OS.WINDOWS.isCurrentOs()) {
+            Process junction = new ProcessBuilder("cmd.exe", "/d", "/c", "mklink", "/J", link.toString(), target.toString())
+                    .redirectErrorStream(true).start();
+            assertTrue(junction.waitFor(5, TimeUnit.SECONDS));
+            assertEquals(0, junction.exitValue(), new String(junction.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } else {
+            Files.createSymbolicLink(link, target);
+        }
     }
 
     @Test

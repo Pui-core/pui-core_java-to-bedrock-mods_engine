@@ -16,6 +16,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -473,6 +474,61 @@ public final class BdsInstaller {
         }
     }
 
+    /** 公式 Linux BDS は、稼働中も LevelDB の LOCK を作らない版がある。 */
+    private static void checkLinuxBdsProcess(Path root) throws IOException {
+        if (!System.getProperty("os.name").equals("Linux") || !Files.isRegularFile(root.resolve("bedrock_server"))) {
+            return;
+        }
+        checkLinuxProcessVisibility();
+        try (Stream<Path> entries = Files.list(Path.of("/proc"))) {
+            for (Path process : entries.filter(p -> p.getFileName().toString().chars().allMatch(Character::isDigit)).toList()) {
+                if (!isLinuxBdsProcess(process)) {
+                    continue;
+                }
+                try {
+                    if (Files.isSameFile(process.resolve("cwd"), root)) {
+                        throw new IOException("対象の BDS プロセスが動いている。BDS を止める");
+                    }
+                } catch (NoSuchFileException ignored) {
+                    // 確認中に終了したプロセスには作業フォルダーが無い。
+                } catch (AccessDeniedException e) {
+                    throw new IOException("BDS プロセスの作業フォルダーを確認できない。BDS を止めてから再試行する", e);
+                }
+            }
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static boolean isLinuxBdsProcess(Path process) throws IOException {
+        try {
+            return Files.readString(process.resolve("comm"), StandardCharsets.UTF_8).strip().equals("bedrock_server");
+        } catch (NoSuchFileException ignored) {
+            return false;
+        } catch (IOException e) {
+            if (Files.notExists(process)) {
+                return false; // 読み取り中に終了して ESRCH になった場合も扱う。
+            }
+            throw new IOException("Linux のプロセス情報を読み取れないため、BDS の停止を確認できない", e);
+        }
+    }
+
+    private static void checkLinuxProcessVisibility() throws IOException {
+        // hidepid によって一覧から PID が消えると、プロセスごとの読み取りでは検知できない。
+        var mounts = Files.readAllLines(Path.of("/proc/self/mounts"), StandardCharsets.UTF_8);
+        for (String mount : mounts) {
+            String[] fields = mount.split(" ", 6);
+            if (fields.length < 4 || !fields[1].equals("/proc") || !fields[2].equals("proc")) {
+                continue;
+            }
+            for (String option : fields[3].split(",")) {
+                if (option.startsWith("hidepid=") && !option.equals("hidepid=0") && !option.equals("hidepid=off")) {
+                    throw new IOException("Linux の /proc でプロセス情報が非表示のため、BDS の停止を確認できない");
+                }
+            }
+        }
+    }
+
     /** 同じ BDS フォルダーを更新する ModBridge の処理を、プロセス間と JVM 内で排他する。 */
     static final class MutationLock implements AutoCloseable {
         private static final String BUSY = "この BDS フォルダーで ModBridge の配置または復旧を実行中";
@@ -561,6 +617,7 @@ public final class BdsInstaller {
 
         static WorldLock acquireOthers(Path root, Path target) throws IOException {
             checkManagedPaths(root, target);
+            checkLinuxBdsProcess(root);
             // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
             return acquire(otherWorlds(target));
         }

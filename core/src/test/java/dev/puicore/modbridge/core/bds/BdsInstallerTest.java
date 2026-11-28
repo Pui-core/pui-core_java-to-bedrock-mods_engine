@@ -216,6 +216,33 @@ class BdsInstallerTest {
     }
 
     @Test
+    @EnabledOnOs(OS.LINUX)
+    void LOCKを作らないBDS実行中は対象の配置と復旧を拒否する() throws Exception {
+        Path binary = Files.copy(Path.of("/bin/sleep"), bds.resolve("bedrock_server"));
+        assertTrue(binary.toFile().setExecutable(true));
+        Files.delete(world.resolve("db/LOCK"));
+        String backup = BdsInstaller.apply(bds, packs, null, true);
+        var before = snapshot();
+        Process running = new ProcessBuilder(binary.toString(), "30").directory(bds.toFile()).start();
+        try {
+            var apply = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+            assertTrue(apply.getMessage().contains("対象の BDS プロセスが動いている"), apply.getMessage());
+            var restore = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, backup, true));
+            assertTrue(restore.getMessage().contains("対象の BDS プロセスが動いている"), restore.getMessage());
+            assertEquals(before, snapshot());
+
+            Path otherRoot = Files.createDirectory(dir.resolve("another-bds"));
+            Files.createDirectories(otherRoot.resolve("worlds/Other"));
+            Files.copy(binary, otherRoot.resolve("bedrock_server"));
+            BdsInstaller.apply(otherRoot, packs, "Other", true);
+        } finally {
+            running.destroyForcibly();
+            assertTrue(running.waitFor(5, TimeUnit.SECONDS));
+        }
+        BdsInstaller.rollback(bds, backup, true);
+    }
+
+    @Test
     @EnabledOnOs(OS.WINDOWS)
     void LOCKがなくても書き込み中のDBでは配置も復旧もしない() throws Exception {
         Files.delete(world.resolve("db/LOCK"));

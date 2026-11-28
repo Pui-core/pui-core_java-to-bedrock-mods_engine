@@ -16,6 +16,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -473,6 +474,39 @@ public final class BdsInstaller {
         }
     }
 
+    /** 公式 Linux BDS は、稼働中も LevelDB の LOCK を作らない版がある。 */
+    private static void checkLinuxBdsProcess(Path root) throws IOException {
+        if (!System.getProperty("os.name").equals("Linux") || !Files.isRegularFile(root.resolve("bedrock_server"))) {
+            return;
+        }
+        try (Stream<Path> entries = Files.list(Path.of("/proc"))) {
+            for (Path process : entries.filter(p -> p.getFileName().toString().chars().allMatch(Character::isDigit)).toList()) {
+                if (!isLinuxBdsProcess(process)) {
+                    continue;
+                }
+                try {
+                    if (Files.isSameFile(process.resolve("cwd"), root)) {
+                        throw new IOException("対象の BDS プロセスが動いている。BDS を止める");
+                    }
+                } catch (NoSuchFileException ignored) {
+                    // 確認中に終了したプロセスには作業フォルダーが無い。
+                } catch (AccessDeniedException e) {
+                    throw new IOException("BDS プロセスの作業フォルダーを確認できない。BDS を止めてから再試行する", e);
+                }
+            }
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static boolean isLinuxBdsProcess(Path process) throws IOException {
+        try {
+            return Files.readString(process.resolve("comm"), StandardCharsets.UTF_8).strip().equals("bedrock_server");
+        } catch (NoSuchFileException | AccessDeniedException ignored) {
+            return false;
+        }
+    }
+
     /** 同じ BDS フォルダーを更新する ModBridge の処理を、プロセス間と JVM 内で排他する。 */
     static final class MutationLock implements AutoCloseable {
         private static final String BUSY = "この BDS フォルダーで ModBridge の配置または復旧を実行中";
@@ -561,6 +595,7 @@ public final class BdsInstaller {
 
         static WorldLock acquireOthers(Path root, Path target) throws IOException {
             checkManagedPaths(root, target);
+            checkLinuxBdsProcess(root);
             // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
             return acquire(otherWorlds(target));
         }

@@ -3,14 +3,14 @@
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
 > **v0.4.0 開発版**
-> Fabric/Geyser と Bedrock のローカルワールドで、自作 fixture と Compressed Blocks の加工を確認しました。公式 BDS での受け入れ試験が残っています。
+> Fabric/Geyser と Bedrock のローカルワールドで、自作 fixture と Compressed Blocks の加工を確認しました。公式 BDS ではサーバー側の読込・更新・復旧を確認済みです。BDS 経由での複数人参加と加工操作の受け入れ試験が残っています。
 
 ## 対応モード
 
 | モード | 実行主体 | 状態 |
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 2人の同時入場と試験用ブロックの設置・破壊の同期を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
-| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画、作業台のレシピ、フォームでの加工を確認。公式 BDS は未検証（[ADR-0006](docs/adr/0006-mode-b-behavior-pack.md)） |
+| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材、レシピ、フォーム加工を確認。公式 BDS 1.26.66.1 の Windows と WSL Ubuntu で配置・更新・復旧を確認（[ADR-0006](docs/adr/0006-mode-b-behavior-pack.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
 ## 必要なもの
@@ -57,7 +57,7 @@ modbridge bds-install build/pack --bds /path/to/bedrock-server --apply --confirm
 modbridge bds-rollback --bds /path/to/bedrock-server --backup <ID> --confirm-stopped        # 配置の前に戻す
 ```
 
-配置の前に、ワールドと設定を `modbridge-backups/` に保存します。BDS が動いている（ワールドの DB がロックされている）ときは配置しません。詳しくは [ADR-0007](docs/adr/0007-bds-install-and-rollback.md) にあります。
+配置の前に、ワールドと共有パックを `modbridge-backups/` に保存します。稼働中の BDS への配置・復旧は拒否します。公式 BDS 1.26.66.1 で接続するには `transport=nethernet` を使います。隔離試験では `server-ip` に Tailscale の IPv4 を指定しました。詳しくは [ADR-0007](docs/adr/0007-bds-install-and-rollback.md) を参照してください。
 
 ## fixture MOD
 

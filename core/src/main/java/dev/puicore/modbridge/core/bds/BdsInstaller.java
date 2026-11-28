@@ -19,10 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -137,7 +139,7 @@ public final class BdsInstaller {
         List<Action> actions = new ArrayList<>();
         Path root = bds.toAbsolutePath().normalize();
         if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-            return new PreparedPlan(new Plan(world, actions, List.of("BDS のフォルダーが無い（シンボリックリンクは使えない）"),
+            return new PreparedPlan(new Plan(world, actions, List.of("BDS の実フォルダーを指定する（リンクは使えない）"),
                     null, null, null, null), null);
         }
         if (!Files.isRegularFile(root.resolve("bedrock_server")) && !Files.isRegularFile(root.resolve("bedrock_server.exe"))) {
@@ -151,9 +153,6 @@ public final class BdsInstaller {
             problems.add("ワールド名に使えない文字か形がある（区切り文字・制御文字、「.」「..」、先頭・末尾の「.」や空白）");
             w = null;
         }
-        if (Files.isSymbolicLink(root.resolve("worlds"))) {
-            problems.add("worlds がシンボリックリンクになっている");
-        }
         Pack bp = null;
         Pack rp = null;
         Bundle bundle = null;
@@ -166,16 +165,17 @@ public final class BdsInstaller {
         }
         if (w != null) {
             Path worldDir = root.resolve("worlds").resolve(w);
-            if (!Files.isDirectory(worldDir, LinkOption.NOFOLLOW_LINKS)) {
+            boolean pathsSafe = true;
+            try {
+                checkManagedPaths(root, worldDir);
+            } catch (IOException e) {
+                problems.add("配置先を確認できない（" + message(e) + "）");
+                pathsSafe = false;
+            }
+            if (pathsSafe && !Files.isDirectory(worldDir, LinkOption.NOFOLLOW_LINKS)) {
                 problems.add("ワールド worlds/" + w + " が無い。BDS を一度起動してワールドを作ってから配置する");
             }
-            for (String dir : List.of(SHARED_BP.folder(), SHARED_RP.folder())) {
-                Path p = root.resolve(dir);
-                if (Files.isSymbolicLink(p)) {
-                    problems.add(dir + " がシンボリックリンクになっている");
-                }
-            }
-            if (bp != null && rp != null) {
+            if (pathsSafe && bp != null && rp != null) {
                 actions.add(new Action("BACKUP", BACKUP_DIR + "/<時刻>/",
                         "worlds/" + w + "、behavior_packs/" + BP_DIR + "、resource_packs/" + RP_DIR + " を保存"));
                 actions.add(new Action(Files.exists(root.resolve("behavior_packs/" + BP_DIR)) ? "REPLACE_DIR" : "CREATE_DIR",
@@ -230,7 +230,7 @@ public final class BdsInstaller {
         Pack bp = prepared.bundle().behavior();
         Pack rp = prepared.bundle().resource();
         try (MutationLock mutation = MutationLock.acquire(root);
-             WorldLock otherWorlds = WorldLock.acquireOthers(worldDir);
+             WorldLock otherWorlds = WorldLock.acquireOthers(root, worldDir);
              WorldLock lock = WorldLock.acquire(worldDir)) {
             otherWorlds.ensureHeld();
             lock.ensureHeld();
@@ -396,7 +396,7 @@ public final class BdsInstaller {
         }
         Path worldDir = root.resolve("worlds").resolve(b.world());
         try (MutationLock mutation = MutationLock.acquire(root);
-             WorldLock otherWorlds = WorldLock.acquireOthers(worldDir)) {
+             WorldLock otherWorlds = WorldLock.acquireOthers(root, worldDir)) {
             otherWorlds.ensureHeld();
             WorldLock.acquire(worldDir).close();
             mutation.ensureHeld();
@@ -415,6 +415,33 @@ public final class BdsInstaller {
     }
 
     // ---- ロック ----
+
+    private static void checkManagedPaths(Path root, Path worldDir) throws IOException {
+        for (Path entry : List.of(root.resolve(SHARED_BP.folder()), root.resolve(SHARED_RP.folder()),
+                root.resolve(BACKUP_DIR), worldDir.resolve(SHARED_BP.worldList()), worldDir.resolve(SHARED_RP.worldList()))) {
+            checkUnlinkedPath(root, entry);
+        }
+    }
+
+    /** パスを親から調べ、リンクやジャンクションをたどる前に拒否する。 */
+    private static void checkUnlinkedPath(Path root, Path entry) throws IOException {
+        Path path = root;
+        for (Path part : root.relativize(entry)) {
+            path = path.resolve(part);
+            BasicFileAttributes attributes;
+            try {
+                attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            } catch (NoSuchFileException missing) {
+                return;
+            }
+            if (!attributes.isDirectory() && !attributes.isRegularFile()) {
+                throw new IOException(root.relativize(path) + " にリンクか特殊ファイルがある");
+            }
+            if (!attributes.isDirectory() && !path.equals(entry)) {
+                throw new IOException(root.relativize(path) + " がフォルダーではない");
+            }
+        }
+    }
 
     private static List<Path> otherWorlds(Path target) throws IOException {
         Path worldsDir = target.getParent();
@@ -444,6 +471,9 @@ public final class BdsInstaller {
         }
 
         static MutationLock acquire(Path root) throws IOException {
+            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("BDS の実フォルダーを指定する（リンクは使えない）");
+            }
             Path canonical = root.toRealPath();
             // 同一 JVM の別チャネルを閉じると、既存のファイルロックまで外れる OS がある。
             if (!ACTIVE_ROOTS.add(canonical)) {
@@ -514,7 +544,8 @@ public final class BdsInstaller {
             return acquire(List.of(worldDir));
         }
 
-        static WorldLock acquireOthers(Path target) throws IOException {
+        static WorldLock acquireOthers(Path root, Path target) throws IOException {
+            checkManagedPaths(root, target);
             // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
             return acquire(otherWorlds(target));
         }
@@ -655,8 +686,13 @@ public final class BdsInstaller {
      * 値は真偽値でなければならない（書き換えられた backup.json でほかのフォルダーを消さないため）。
      */
     private static Backup readBackup(Path root, String id) throws IOException {
+        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("BDS の実フォルダーを指定する（リンクは使えない）");
+        }
         Path dir = root.resolve(BACKUP_DIR).resolve(id);
-        JsonObject meta = readJson(dir.resolve("backup.json"));
+        Path metadata = dir.resolve("backup.json");
+        checkUnlinkedPath(root, metadata);
+        JsonObject meta = readJson(metadata);
         if (meta == null || !(meta.get("world") instanceof JsonPrimitive wp) || !wp.isString()) {
             throw new IOException("backup.json が無いか壊れている");
         }
@@ -672,8 +708,12 @@ public final class BdsInstaller {
             if (!(e.getValue() instanceof JsonPrimitive p) || !p.isBoolean()) {
                 throw new IOException("backup.json の値が真偽値ではない: " + e.getKey());
             }
-            if (p.getAsBoolean() && !Files.isDirectory(dir.resolve(e.getKey()), LinkOption.NOFOLLOW_LINKS)) {
-                throw new IOException("バックアップに " + e.getKey() + " が無い");
+            if (p.getAsBoolean()) {
+                Path saved = dir.resolve(e.getKey());
+                checkUnlinkedPath(root, saved);
+                if (!Files.isDirectory(saved, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("バックアップに " + e.getKey() + " が無い");
+                }
             }
             out.put(e.getKey(), p.getAsBoolean());
         }
@@ -1019,19 +1059,20 @@ public final class BdsInstaller {
     private static void copyTree(Path src, Path dst, boolean skipDbLock) throws IOException {
         try (Stream<Path> s = Files.walk(src)) {
             for (Path p : s.toList()) {
-                if (Files.isSymbolicLink(p)) {
-                    throw new IOException("シンボリックリンクはコピーしない: " + src.relativize(p));
+                BasicFileAttributes attributes = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                if (!attributes.isDirectory() && !attributes.isRegularFile()) {
+                    throw new IOException("リンクか特殊ファイルはコピーしない: " + src.relativize(p));
                 }
                 if (skipDbLock && p.getFileName().toString().equals("LOCK") && p.getParent() != null
                         && p.getParent().getFileName() != null && p.getParent().getFileName().toString().equals("db")) {
                     continue;
                 }
                 Path t = dst.resolve(src.relativize(p).toString());
-                if (Files.isDirectory(p)) {
+                if (attributes.isDirectory()) {
                     Files.createDirectories(t);
                 } else {
                     Files.createDirectories(t.getParent());
-                    Files.copy(p, t, StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(p, t, StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS);
                 }
             }
         }

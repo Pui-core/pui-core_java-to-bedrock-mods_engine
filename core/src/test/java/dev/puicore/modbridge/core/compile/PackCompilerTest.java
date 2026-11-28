@@ -693,6 +693,46 @@ class PackCompilerTest {
     }
 
     @Test
+    void 回転体の同期設定と参照された音だけを生成する() throws IOException {
+        var input = fixture("rotor");
+        input.put("assets/rotor/modbridge/presentation.json", u("""
+                {"schemaVersion":1,"entities":[{"id":"shaft","texture":"entity/shaft","axis":"x","rpm":30,"smoke":true}]}
+                """));
+        var png = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(32, 16, BufferedImage.TYPE_INT_RGB), "png", png);
+        input.put("assets/rotor/textures/entity/shaft.png", png.toByteArray());
+        var ogg = new byte[28];
+        System.arraycopy(u("OggS"), 0, ogg, 0, 4);
+        input.put("assets/rotor/sounds/start.ogg", ogg);
+        input.put("assets/rotor/sounds.json", u("""
+                {"start":{"sounds":[{"name":"rotor:start","weight":2}]},
+                 "invalid":{"sounds":[{"name":"rotor:start","type":"event"}]}}
+                """));
+        var jar = jar("rotor.jar", input);
+        var result = compile(List.of(jar));
+        assertTrue(result.ok(), () -> result.diagnostics().toString());
+        var rp = unzip(result.outputs().get(PackCompiler.PACK_FILE));
+        var bp = unzip(result.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        assertTrue(text(bp, "entities/rotor/shaft.json").contains("\"client_sync\": true"));
+        assertTrue(text(rp, "entity/rotor/shaft.entity.json").contains("query.property('modbridge:active')"));
+        assertTrue(text(rp, "animations/rotor/shaft.animation.json").contains("query.life_time * 180"));
+        assertArrayEquals(png.toByteArray(), rp.get("textures/modbridge/entity/rotor/shaft.png"));
+        assertArrayEquals(ogg, rp.get("sounds/modbridge/rotor/start.ogg"));
+        var defs = JsonParser.parseString(text(rp, "sounds/sound_definitions.json")).getAsJsonObject().getAsJsonObject("sound_definitions");
+        assertEquals(List.of("modbridge.rotor.start"), defs.keySet().stream().toList());
+        assertTrue(result.diagnostics().stream().anyMatch(d -> d.code().equals("SOUND_UNSUPPORTED")));
+        assertTrue(result.mapping().entries().stream().anyMatch(e -> e.kind().equals("ENTITY")));
+        assertTrue(result.mapping().behavior().stream().anyMatch(e -> e.kind().equals("ENTITY")));
+        assertArrayEquals(result.outputs().get(PackCompiler.ADDON_FILE), compile(List.of(jar)).outputs().get(PackCompiler.ADDON_FILE));
+
+        input.remove("assets/rotor/textures/entity/shaft.png");
+        var invalid = compile(List.of(jar("invalid-rotor.jar", input)));
+        assertFalse(invalid.ok());
+        assertTrue(invalid.outputs().isEmpty());
+        assertTrue(invalid.diagnostics().stream().anyMatch(d -> d.code().equals("ENTITY_PRESENTATION_INVALID")));
+    }
+
+    @Test
     void 変換しないデータと素材のカテゴリを報告する() throws IOException {
         Map<String, byte[]> m = fixture("dn");
         m.put("data/dn/worldgen/configured_feature/ore.json", u("{}"));

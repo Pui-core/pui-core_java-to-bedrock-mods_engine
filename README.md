@@ -142,6 +142,37 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate --keep-running
 
 `--floodgate` は `local/mode-a-server` に専用ワールドを作ります。Java 版は認証付きでこの PC の `127.0.0.1:25565`、Bedrock 版は Floodgate 認証付きで `--keep-running` 時に LAN のポート `19132` から接続できます。操作・再接続・ワールドの再起動を確認する手順は [ADR-0005](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証) にあります。
 
+## エンティティ・音と Create の段階試験
+
+Mode B では、MOD の JAR に `assets/<mod>/modbridge/presentation.json` を置くと、回転エンティティの見た目とサーバー定義を RP・BP に出力します。`schemaVersion: 1`、`entities` の各要素に `id`、`texture`（`entity/<name>`）、`axis`（`x`・`y`・`z`）、`rpm`（1〜120）を指定します。`smoke: true` を付けると回転中に煙を出します。PNG は自 MOD の `textures/entity/` に置き、32×16 px 以上とします。ひとつの回転体につきクライアントに同期する真偽値は1個で、回転角はクライアントが計算します。Java MOD の AI、レンダラー、動的な衝突形状は変換対象外です。[Bedrock エンティティプロパティ](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontoentityproperties?view=minecraft-bedrock-stable)
+
+`assets/<mod>/sounds.json` の自 MOD に対する直接の namespaced Ogg 参照を `modbridge.<mod>.<event>` として RP に出力します。イベント参照、字幕、Java の再生トリガーや減衰設定は個別対応の範囲です。fixture のパックを生成すると、次のコマンドで回転体と音を呼び出せます。回転体を操作しても回転のオン・オフを切り替えられます。[Bedrock サウンド](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontosound?view=minecraft-bedrock-stable)
+
+```text
+/summon pmb_fixture:test_rotor
+/event entity @e[type=pmb_fixture:test_rotor,c=1] modbridge:activate
+/event entity @e[type=pmb_fixture:test_rotor,c=1] modbridge:deactivate
+/playsound modbridge.pmb_fixture.test_rotor @s
+```
+
+```sh
+modbridge create-preview /path/to/create.jar
+modbridge create-preview /path/to/create.jar --out /path/to/preview
+```
+
+`create-preview` は Create の JAR をコード実行せずに読み、対象の Minecraft・ローダー・確認できた素材を JSON に出します。出力先を指定すると、安山岩合金・真鍮インゴット・安山岩ケーシング・真鍮ケーシングの静的プレビューを既存のパック形式で生成します。素材は指定した JAR から取得し、再配布する場合は上流の条件に従います。
+
+| 対象 | Mode A | Mode B |
+| --- | --- | --- |
+| 静的素材 | リソースのプレビュー。Geyser での表示は実機確認待ち | アイコンと単純ブロックの試験用アドオン |
+| 回転軸・歯車 | Create のサーバーが持つ回転・軸方向を送るアダプターが必要 | 回転体 fixture は実装済み。Create の動力ネットワークは未対応 |
+| 加工機 | Create のレシピ、入出力、状態の連携が必要 | 既存の宣言加工ルールを利用可能。Create の加工ロジックは未対応 |
+| コンベア | 運搬中のアイテムの追跡、表示と当たり判定が必要 | 未対応 |
+| 移動構造物・列車 | 描画・帯域・衝突の成立性を別途確認 | 未対応 |
+
+静的試験の対象は Create Fabric `6.0.8.1+build.1744-mc1.20.1` です。公開配布の Fabric 26.3 向けビルドを確認できていないため、この JAR を現在の Fabric 26.3 サーバーに載せる Mode A の実験は保留です。[Create Fabric の配布版](https://modrinth.com/mod/create-fabric/versions) [Create のリリース](https://github.com/Creators-of-Create/Create/releases)
+
+
 ## 構成
 
 ```text

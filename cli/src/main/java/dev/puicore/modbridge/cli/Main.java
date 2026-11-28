@@ -3,6 +3,7 @@ package dev.puicore.modbridge.cli;
 import dev.puicore.modbridge.core.Doctor;
 import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.bds.BdsInstaller;
+import dev.puicore.modbridge.core.compile.CreatePreview;
 import dev.puicore.modbridge.core.compile.PackCompiler;
 import dev.puicore.modbridge.core.compile.PackPublisher;
 import dev.puicore.modbridge.core.TargetVersions;
@@ -12,6 +13,7 @@ import dev.puicore.modbridge.core.ir.BridgeIr.FeaturePlan;
 import dev.puicore.modbridge.core.ir.BridgeIr.Severity;
 import dev.puicore.modbridge.core.ir.IrJson;
 import dev.puicore.modbridge.core.scan.Analyzer;
+import dev.puicore.modbridge.core.scan.SafeArchive;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -65,6 +67,7 @@ public final class Main {
             case "validate" -> scan(rest, out, err, false);
             case "report" -> report(rest, out, err);
             case "compile" -> compile(rest, out, err);
+            case "create-preview" -> createPreview(rest, out, err);
             case "bds-install" -> bdsInstall(rest, out, err);
             case "bds-rollback" -> bdsRollback(rest, out, err);
             default -> {
@@ -408,6 +411,36 @@ public final class Main {
         return sha.length() > 12 ? sha.substring(0, 12) + "…" : (sha.isEmpty() ? "-" : sha);
     }
 
+    private static int createPreview(List<String> args, PrintStream out, PrintStream err) {
+        if ((args.size() != 1 && args.size() != 3) || args.getFirst().startsWith("-")
+                || (args.size() == 3 && !args.get(1).equals("--out"))) {
+            err.println("使い方: modbridge create-preview CREATE.jar [--out DIR]");
+            return USAGE;
+        }
+        try {
+            var preview = CreatePreview.read(Path.of(args.getFirst()));
+            out.println(CreatePreview.json(preview.report()));
+            if (args.size() == 1) {
+                return OK;
+            }
+            var result = preview.compile();
+            result.diagnostics().stream().filter(d -> d.severity() == Severity.ERROR || d.code().equals("MODEL_UNSUPPORTED"))
+                    .forEach(d -> err.println(d.code() + " " + d.subject() + ": " + d.message()));
+            if (!result.ok() || result.mapping().entries().stream().noneMatch(e -> !e.status().equals("SKIPPED"))) {
+                err.println("Create の静的プレビューを生成できない");
+                return FAILED;
+            }
+            PackPublisher.publish(Path.of(args.get(2)), result.outputs());
+            return OK;
+        } catch (SafeArchive.ArchiveException | IllegalArgumentException failure) {
+            err.println("Create プレビューの入力を読めない: " + failure.getMessage());
+            return FAILED;
+        } catch (IOException failure) {
+            err.println("Create プレビューを出力できない: " + failure.getMessage());
+            return IO;
+        }
+    }
+
     private static int doctor(PrintStream out) {
         Doctor.Result result = Doctor.run();
         for (Doctor.Check c : result.checks()) {
@@ -429,6 +462,7 @@ public final class Main {
                   report <ir.json>                IR から互換性レポートを表示する
                   compile <jar|dir>... --out DIR [--runtime FILE] [--cache DIR] [--pack-name NAME] [--pack-id ID] [--adapter-rules FILE]
                                                   Bedrock のアドオン（RP・BP・.mcaddon）と対応表を作り、DIR に公開する
+                  create-preview CREATE.jar [--out DIR]  Create の互換性段階を表示し、指定時に静的素材だけ出力する
                   bds-install <DIR> --bds BDS [--world NAME] [--apply --confirm-stopped]
                                                   compile の出力を BDS のワールドに配置する（既定は dry-run）
                   bds-rollback --bds BDS --backup ID --confirm-stopped

@@ -193,7 +193,9 @@ public final class BdsInstaller {
         Path worldDir = root.resolve("worlds").resolve(plan.world());
         Pack bp = prepared.bundle().behavior();
         Pack rp = prepared.bundle().resource();
-        try (WorldLock lock = WorldLock.acquire(worldDir)) {
+        try (WorldLock otherWorlds = WorldLock.acquireOthers(worldDir);
+             WorldLock lock = WorldLock.acquire(worldDir)) {
+            otherWorlds.ensureHeld();
             lock.ensureHeld();
             String id = backup(root, plan.world());
             try {
@@ -238,8 +240,8 @@ public final class BdsInstaller {
     /**
      * バックアップから戻す。apply と同じく、止めたことの明示とロックが要る。
      *
-     * <p>ワールドのフォルダーごと置き換えるので、置き換えの間だけはロックを放す（Windows では、開いているファイルを含む
-     * フォルダーを動かせないため）。置き換えの後でもう一度ロックを確かめ、BDS が起動していたら知らせる。
+     * <p>対象ワールドのフォルダーを置き換える間は、そのワールドのロックだけを放す。Windows では、開いているファイルを
+     * 含むフォルダーを動かせないため。置き換え後に対象のロックを確かめ、BDS が起動していたら知らせる。
      */
     public static void rollback(Path bds, String backupId, boolean confirmedStopped) throws InstallException {
         if (backupId == null || !BACKUP_ID.matcher(backupId).matches()) {
@@ -256,16 +258,17 @@ public final class BdsInstaller {
             throw new InstallException("バックアップ " + backupId + " を使えない（" + message(e) + "）", e);
         }
         Path worldDir = root.resolve("worlds").resolve(b.world());
-        try {
+        try (WorldLock otherWorlds = WorldLock.acquireOthers(worldDir)) {
+            otherWorlds.ensureHeld();
             WorldLock.acquire(worldDir).close();
             restore(root, b, true);
+            try {
+                WorldLock.acquire(worldDir).close();
+            } catch (IOException e) {
+                throw new InstallException("元に戻したが、その間に BDS が起動した可能性がある。BDS を止めてから、もう一度 rollback する", e);
+            }
         } catch (IOException | RuntimeException e) {
             throw new InstallException("元に戻せない（" + message(e) + "）。バックアップ " + backupId + " は残っている", e);
-        }
-        try {
-            WorldLock.acquire(worldDir).close();
-        } catch (IOException e) {
-            throw new InstallException("元に戻したが、その間に BDS が起動した可能性がある。BDS を止めてから、もう一度 rollback する", e);
         }
     }
 
@@ -286,38 +289,38 @@ public final class BdsInstaller {
      */
     private static final class WorldLock implements AutoCloseable {
         private static final Pattern MUTABLE_LEVELDB_FILE = Pattern.compile("MANIFEST-[0-9]+|[0-9]+\\.log");
-        private final List<FileChannel> channels;
-        private final FileLock lock;
-
-        private WorldLock(List<FileChannel> channels, FileLock lock) {
-            this.channels = channels;
-            this.lock = lock;
-        }
+        private final List<FileChannel> channels = new ArrayList<>();
+        private final List<FileLock> locks = new ArrayList<>();
 
         static WorldLock acquire(Path worldDir) throws IOException {
-            Path db = worldDir.resolve("db");
-            if (Files.notExists(db, LinkOption.NOFOLLOW_LINKS)) {
-                return new WorldLock(List.of(), null);
+            return acquire(List.of(worldDir));
+        }
+
+        static WorldLock acquireOthers(Path target) throws IOException {
+            Path worldsDir = target.getParent();
+            if (Files.notExists(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
+                return new WorldLock();
             }
-            if (!Files.isDirectory(db, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.isDirectory(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
                 throw new LockedException();
             }
-            List<FileChannel> opened = new ArrayList<>();
+            List<Path> others;
+            try (Stream<Path> paths = Files.list(worldsDir)) {
+                // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
+                others = paths.filter(path -> !path.equals(target) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList();
+            } catch (UncheckedIOException e) {
+                throw e.getCause();
+            }
+            return acquire(others);
+        }
+
+        private static WorldLock acquire(List<Path> worlds) throws IOException {
+            WorldLock acquired = new WorldLock();
             try {
-                FileLock lock = null;
-                Path lockFile = db.resolve("LOCK");
-                if (!Files.notExists(lockFile, LinkOption.NOFOLLOW_LINKS)) {
-                    FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
-                    opened.add(channel);
-                    lock = channel.tryLock();
-                    if (lock == null) {
-                        throw new LockedException();
-                    }
+                for (Path world : worlds) {
+                    acquired.openDatabase(world.resolve("db"));
                 }
-                if (System.getProperty("os.name").startsWith("Windows")) {
-                    acquireWindowsFiles(db, opened);
-                }
-                return new WorldLock(opened, lock);
+                return acquired;
             } catch (IOException | UncheckedIOException | ReflectiveOperationException | UnsupportedOperationException
                     | OverlappingFileLockException failure) {
                 var locked = failure instanceof LockedException e ? e : new LockedException();
@@ -325,11 +328,33 @@ public final class BdsInstaller {
                     locked.addSuppressed(failure);
                 }
                 try {
-                    new WorldLock(opened, null).close();
+                    acquired.close();
                 } catch (IOException cleanup) {
                     locked.addSuppressed(cleanup);
                 }
                 throw locked;
+            }
+        }
+
+        private void openDatabase(Path db) throws IOException, ReflectiveOperationException {
+            if (Files.notExists(db, LinkOption.NOFOLLOW_LINKS)) {
+                return;
+            }
+            if (!Files.isDirectory(db, LinkOption.NOFOLLOW_LINKS)) {
+                throw new LockedException();
+            }
+            Path lockFile = db.resolve("LOCK");
+            if (!Files.notExists(lockFile, LinkOption.NOFOLLOW_LINKS)) {
+                FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+                channels.add(channel);
+                FileLock lock = channel.tryLock();
+                if (lock == null) {
+                    throw new LockedException();
+                }
+                locks.add(lock);
+            }
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                acquireWindowsFiles(db, channels);
             }
         }
 
@@ -354,7 +379,7 @@ public final class BdsInstaller {
 
         /** ロックを持っている間に呼ぶ（DB の無いワールドでは何もしない）。 */
         void ensureHeld() throws IOException {
-            if ((lock != null && !lock.isValid()) || channels.stream().anyMatch(ch -> !ch.isOpen())) {
+            if (locks.stream().anyMatch(lock -> !lock.isValid()) || channels.stream().anyMatch(ch -> !ch.isOpen())) {
                 throw new IOException("ワールドの DB のロックが外れた");
             }
         }

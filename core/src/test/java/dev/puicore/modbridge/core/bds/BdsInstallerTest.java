@@ -147,6 +147,44 @@ class BdsInstallerTest {
     }
 
     @Test
+    void 設定を別ワールドに切り替えても元のDBが使用中なら配置しない() throws Exception {
+        Path alternate = Files.createDirectory(bds.resolve("worlds/Archive"));
+        Files.writeString(alternate.resolve("level.dat"), "archived world");
+        Files.writeString(bds.resolve("server.properties"), "level-name=Archive\n");
+        Map<String, String> before = snapshot();
+        try (FileChannel ch = FileChannel.open(world.resolve("db/LOCK"), StandardOpenOption.WRITE);
+             FileLock lock = ch.lock()) {
+            assertTrue(lock.isValid());
+            var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, "Archive", true));
+            assertTrue(error.getMessage().contains("ロック"), error.getMessage());
+        }
+        assertEquals(before, snapshot());
+        BdsInstaller.apply(bds, packs, "Archive", true);
+        assertTrue(Files.isRegularFile(alternate.resolve("world_resource_packs.json")));
+        assertEquals(OTHER, Files.readString(world.resolve("world_behavior_packs.json")));
+    }
+
+    @Test
+    void 別ワールドの復旧でも起動対象のDBが使用中なら変更しない() throws Exception {
+        Path alternate = Files.createDirectory(bds.resolve("worlds/Archive"));
+        Files.writeString(alternate.resolve("level.dat"), "archived world");
+        Map<String, String> original = snapshot();
+        String id = BdsInstaller.apply(bds, packs, "Archive", true);
+        Map<String, String> installed = snapshot();
+        try (FileChannel ch = FileChannel.open(world.resolve("db/LOCK"), StandardOpenOption.WRITE);
+             FileLock lock = ch.lock()) {
+            assertTrue(lock.isValid());
+            var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+            assertTrue(error.getMessage().contains("ロック"), error.getMessage());
+        }
+        assertEquals(installed, snapshot());
+        BdsInstaller.rollback(bds, id, true);
+        Map<String, String> restored = snapshot();
+        restored.keySet().removeIf(path -> path.startsWith("modbridge-backups/"));
+        assertEquals(original, restored);
+    }
+
+    @Test
     @EnabledOnOs(OS.WINDOWS)
     void LOCKがなくても書き込み中のDBでは配置も復旧もしない() throws Exception {
         Files.delete(world.resolve("db/LOCK"));

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonParser;
 import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.ir.BridgeIr;
 import dev.puicore.modbridge.core.scan.Analyzer;
@@ -489,8 +490,10 @@ class PackCompilerTest {
         assertFalse(bp.containsKey("items/pmb_fixture/test_block.json"), "ブロックアイテムはファイルを作らない");
         String shaped = text(bp, "recipes/pmb_fixture/test_block.json");
         assertTrue(shaped.contains("minecraft:recipe_shaped") && shaped.contains("\"item\": \"pmb_fixture:test_ingot\""), shaped);
+        assertEquals("pmb_fixture:test_ingot", unlockedBy(shaped, "minecraft:recipe_shaped"));
         String shapeless = text(bp, "recipes/pmb_fixture/test_ingot_from_block.json");
         assertTrue(shapeless.contains("minecraft:recipe_shapeless") && shapeless.contains("\"count\": 9"), shapeless);
+        assertEquals("pmb_fixture:test_block", unlockedBy(shapeless, "minecraft:recipe_shapeless"));
         assertEquals("GENERATED", bpEntry(r, "RECIPE", "pmb_fixture:test_block").status());
         assertEquals("PARTIAL", bpEntry(r, "ITEM", "pmb_fixture:test_ingot").status(), "コードで決まる性質は変換しない");
         assertTrue(bpEntry(r, "BLOCK", "pmb_fixture:test_block").notes().get(0).contains("コードで決まる"));
@@ -559,6 +562,11 @@ class PackCompilerTest {
         assertFalse(invalid.ok());
         assertTrue(invalid.outputs().isEmpty());
         assertTrue(invalid.diagnostics().stream().anyMatch(d -> d.code().equals("ADAPTER_RULES_INVALID")));
+    }
+
+    private static String unlockedBy(String recipe, String kind) {
+        return JsonParser.parseString(recipe).getAsJsonObject().getAsJsonObject(kind)
+                .getAsJsonArray("unlock").get(0).getAsJsonObject().get("item").getAsString();
     }
 
     @Test

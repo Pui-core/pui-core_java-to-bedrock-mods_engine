@@ -63,7 +63,7 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/6";
+    static final String COMPILER_VERSION = "pack-compiler/8";
     static final long MAX_PACK_BYTES = 256L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */

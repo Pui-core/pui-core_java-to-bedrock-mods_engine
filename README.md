@@ -10,7 +10,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 | モード | 実行主体 | 状態 |
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 2人の同時入場と試験用ブロックの設置・破壊の同期を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
-| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画を確認。BDS の動作は未検証（[ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md)） |
+| B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画と加工を確認。BDS の動作は未検証（[ADR-0006](docs/adr/0006-mode-b-behavior-pack.md)） |
 | C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
 
 ## 必要なもの
@@ -100,7 +100,7 @@ modbridge compile pmb-fabric-fixture.jar fabric-api.jar --out build/machine-pack
 
 サバイバルのメンバーとオペレーターが加工台を操作できます。スクリプトは画面を開くときと選択を受け付けるときにこの権限を確認します。スニーク中は通常のブロック操作ができます。選択の有効期間は600サーバーティックで、処理結果はアクションバーに出ます。既定のスタックと結合できる材料を使います。必要な個数または出力先が足りなければ、所持品を変更しません。
 
-加工メニューを含むパックは Bedrock 1.21.100 以上と安定版の `@minecraft/server` 2.1.0、`@minecraft/server-ui` 2.0.0 を要求します。加工台には Bedrock 標準のプレイヤー権限が適用されます。他のアドオンが領域ごとに設ける操作制限との連携は未対応です。BDS と純正クライアントでの加工動作は実機確認待ちです。[Bedrock 1.21.100 の変更履歴](https://feedback.minecraft.net/hc/en-us/articles/38581287884557-Minecraft-1-21-100-Bedrock)
+加工メニューを含むパックは Bedrock 1.21.100 以上と安定版の `@minecraft/server` 2.1.0、`@minecraft/server-ui` 2.0.0 を要求します。加工台には Bedrock 標準のプレイヤー権限が適用されます。他のアドオンが領域ごとに設ける操作制限との連携は未対応です。Minecraft for Windows 26.65 のローカルワールドで、両方の加工画面、材料の消費と結果の追加、ワールド再読込後の保存を確認済みです。公式 BDS での動作は実機確認待ちです。[Bedrock 1.21.100 の変更履歴](https://feedback.minecraft.net/hc/en-us/articles/38581287884557-Minecraft-1-21-100-Bedrock)
 
 ## 接続スパイク（Mode A）
 

@@ -107,7 +107,7 @@ function registerMachineMenus(rules) {
             const container = player.getComponent("minecraft:inventory")?.container;
             if (recipe && container) {
                 const applied = transfer(container, recipe);
-                player.onScreenDisplay.setActionBar(applied ? recipe.label + " ✓" : "材料かインベントリの空きが不足しています");
+                player.onScreenDisplay.setActionBar(applied ? "加工が完了しました" : "材料かインベントリの空きが不足しています");
             }
         } finally {
             system.clearRun(timer);

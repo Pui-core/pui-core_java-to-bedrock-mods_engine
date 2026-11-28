@@ -37,6 +37,7 @@
 ### 安全策
 
 - **dry-run が既定**: `--apply` を付けない限り、何も変更しない。
+- **配置と復旧の排他**: 同じ BDS フォルダーでは、配置と復旧のうち1件だけが書き込める。`.modbridge-bds.lock` を使って、DB の停止確認から操作完了まで排他する。競合した操作はパックやワールドを変更せずに終了する。空のファイルは同じロック先を使うために残し、プロセスが終了すればロックは解除される。
 - **停止の確認**: `--confirm-stopped` の明示に加えて、`db/LOCK` があれば LevelDB のロックを取れるか確かめる。Windows では `MANIFEST-<番号>` と `<番号>.log` も、書き込みを共有しない読み取りモードで開く。開いている書き込みハンドルがあれば断る。読み取りは共有するため、配置中にハンドルを保持したままバックアップできる。RP/BP は BDS が共有するため、対象に加えて同じ `worlds/` にあるほかの実フォルダーの DB も確認する。DB がまだ無いワールドでは、明示だけを使う。[BDS の共有パック](https://learn.microsoft.com/ja-jp/minecraft/creator/documents/bedrockserver/getting-started?view=minecraft-bedrock-stable)
 - **パックの組み合わせ**: BP の manifest にある RP への依存 UUID・版と、提供された RP のヘッダーを照合する。組が違えば dry-run と apply の両方で拒否する。apply は検査した組を使って配置する。Script API のモジュール依存を含む BP も同じ検査を通す。[Bedrock のパック manifest](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/addonsreference/packmanifest)
 - **バックアップ**: 配置の前に、ワールドのフォルダー全体・自分のパックのフォルダー・2 つの JSON を `modbridge-backups/<UTC 時刻>/` に保存する。何があり、何が無かったかを `backup.json` に記録する。`db/LOCK` は保存しない（ロック中で読めない場合があり、LevelDB が作り直すため）。

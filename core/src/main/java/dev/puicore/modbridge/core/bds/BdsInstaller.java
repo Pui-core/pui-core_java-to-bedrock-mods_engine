@@ -32,8 +32,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -45,6 +47,7 @@ import java.util.zip.ZipInputStream;
  * <ul>
  *   <li>既定は dry-run（計画を返すだけで、何も変更しない）</li>
  *   <li>apply は、呼出し側が「BDS を止めた」と明示し、さらにワールドの DB のロックを取れるとき（BDS が動いていないとき）だけ行う</li>
+ *   <li>変更操作は BDS フォルダー内の空の {@code .modbridge-bds.lock} で排他する</li>
  *   <li>変更の前に、ワールド・パックのフォルダー・パック一覧の JSON をバックアップする。rollback でそこから戻せる</li>
  *   <li>触るのは、自分のパックのフォルダー（{@code behavior_packs/modbridge-bp}・{@code resource_packs/modbridge-rp}）と、
  *       ワールドの {@code world_behavior_packs.json}・{@code world_resource_packs.json} の自分の項目だけ</li>
@@ -54,6 +57,7 @@ public final class BdsInstaller {
     public static final String BP_DIR = "modbridge-bp";
     public static final String RP_DIR = "modbridge-rp";
     public static final String BACKUP_DIR = "modbridge-backups";
+    static final String OPERATION_LOCK_FILE = ".modbridge-bds.lock";
     static final long MAX_PACK_BYTES = 256L << 20;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     private static final Pattern WORLD_NAME = Pattern.compile("[^/\\\\:*?\"<>|\\x00-\\x1f]{1,128}");
@@ -193,10 +197,12 @@ public final class BdsInstaller {
         Path worldDir = root.resolve("worlds").resolve(plan.world());
         Pack bp = prepared.bundle().behavior();
         Pack rp = prepared.bundle().resource();
-        try (WorldLock otherWorlds = WorldLock.acquireOthers(worldDir);
+        try (MutationLock mutation = MutationLock.acquire(root);
+             WorldLock otherWorlds = WorldLock.acquireOthers(worldDir);
              WorldLock lock = WorldLock.acquire(worldDir)) {
             otherWorlds.ensureHeld();
             lock.ensureHeld();
+            mutation.ensureHeld();
             String id = backup(root, plan.world());
             try {
                 // 前回と違うパック ID で作り直した場合に備えて、いま入っているパックの UUID の項目も置き換える
@@ -258,9 +264,11 @@ public final class BdsInstaller {
             throw new InstallException("バックアップ " + backupId + " を使えない（" + message(e) + "）", e);
         }
         Path worldDir = root.resolve("worlds").resolve(b.world());
-        try (WorldLock otherWorlds = WorldLock.acquireOthers(worldDir)) {
+        try (MutationLock mutation = MutationLock.acquire(root);
+             WorldLock otherWorlds = WorldLock.acquireOthers(worldDir)) {
             otherWorlds.ensureHeld();
             WorldLock.acquire(worldDir).close();
+            mutation.ensureHeld();
             restore(root, b, true);
             try {
                 WorldLock.acquire(worldDir).close();
@@ -273,6 +281,67 @@ public final class BdsInstaller {
     }
 
     // ---- ロック ----
+
+    /** 同じ BDS フォルダーを更新する ModBridge の処理を、プロセス間と JVM 内で排他する。 */
+    static final class MutationLock implements AutoCloseable {
+        private static final String BUSY = "この BDS フォルダーで ModBridge の配置または復旧を実行中";
+        private static final Set<Path> ACTIVE_ROOTS = ConcurrentHashMap.newKeySet();
+        private final Path root;
+        private FileChannel channel;
+        private FileLock lock;
+
+        private MutationLock(Path root) {
+            this.root = root;
+        }
+
+        static MutationLock acquire(Path root) throws IOException {
+            Path canonical = root.toRealPath();
+            // 同一 JVM の別チャネルを閉じると、既存のファイルロックまで外れる OS がある。
+            if (!ACTIVE_ROOTS.add(canonical)) {
+                throw new IOException(BUSY);
+            }
+            var mutation = new MutationLock(canonical);
+            try {
+                mutation.channel = FileChannel.open(canonical.resolve(OPERATION_LOCK_FILE), StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+                mutation.lock = mutation.channel.tryLock(0, 1, false);
+                if (mutation.lock == null) {
+                    throw new IOException(BUSY);
+                }
+                return mutation;
+            } catch (IOException | RuntimeException failure) {
+                try {
+                    mutation.close();
+                } catch (IOException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                if (failure instanceof OverlappingFileLockException) {
+                    throw new IOException(BUSY, failure);
+                }
+                if (failure instanceof UnsupportedOperationException) {
+                    throw new IOException("このファイルシステムでは ModBridge の配置・復旧ロックを使えない", failure);
+                }
+                throw failure;
+            }
+        }
+
+        void ensureHeld() throws IOException {
+            if (!lock.isValid()) {
+                throw new IOException("ModBridge の配置・復旧ロックが外れた");
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                if (channel != null) {
+                    channel.close();
+                }
+            } finally {
+                ACTIVE_ROOTS.remove(root);
+            }
+        }
+    }
 
     /** BDS が動いていてロックを取れない。メッセージは固定の文言（パスを含めない）。 */
     static final class LockedException extends IOException {

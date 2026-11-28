@@ -278,6 +278,69 @@ class BdsInstallerTest {
     }
 
     @Test
+    void 別のワールドが使う共有パックの版を更新できない() throws Exception {
+        Path archive = Files.createDirectories(bds.resolve("worlds/Archive"));
+        BdsInstaller.apply(bds, packs, null, true);
+        BdsInstaller.apply(bds, packs, "Archive", true);
+        var installed = BdsInstaller.plan(bds, packs, null);
+        compilePacks(packs, "next_ingot");
+        Map<String, String> before = snapshot();
+        var update = BdsInstaller.plan(bds, packs, null);
+        assertEquals(installed.rpUuid(), update.rpUuid());
+        assertFalse(installed.rpVersion().equals(update.rpVersion()));
+        assertFalse(update.ok());
+        assertTrue(update.problems().getFirst().contains("worlds/Archive"));
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+        assertEquals(before, snapshot());
+
+        Files.delete(archive.resolve("world_behavior_packs.json"));
+        var resourceOnly = BdsInstaller.plan(bds, packs, null);
+        assertFalse(resourceOnly.ok());
+        assertTrue(resourceOnly.problems().getFirst().contains("resource_packs/modbridge-rp"));
+
+        // 未使用なら、別のワールドがあっても更新できる。
+        Files.delete(archive.resolve("world_resource_packs.json"));
+        BdsInstaller.apply(bds, packs, null, true);
+    }
+
+    @Test
+    void 別のワールドが使う共有パックをrollbackで消せない() throws Exception {
+        Path archive = Files.createDirectories(bds.resolve("worlds/Archive"));
+        String first = BdsInstaller.apply(bds, packs, null, true);
+        BdsInstaller.apply(bds, packs, "Archive", true);
+        Map<String, String> before = snapshot();
+
+        var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, first, true));
+        assertTrue(error.getMessage().contains("worlds/Archive"));
+        assertEquals(before, snapshot());
+
+        Files.delete(archive.resolve("world_behavior_packs.json"));
+        Files.delete(archive.resolve("world_resource_packs.json"));
+        BdsInstaller.rollback(bds, first, true);
+        assertFalse(Files.exists(bds.resolve("behavior_packs/modbridge-bp")));
+        assertFalse(Files.exists(bds.resolve("resource_packs/modbridge-rp")));
+    }
+
+    @Test
+    void 別のワールドに同じ版のパックが残るなら共有パックを更新できる() throws Exception {
+        Path archive = Files.createDirectories(bds.resolve("worlds/Archive"));
+        BdsInstaller.apply(bds, packs, null, true);
+        BdsInstaller.apply(bds, packs, "Archive", true);
+        Path localBehavior = Files.createDirectories(archive.resolve("behavior_packs/local-copy"));
+        Path sharedResource = Files.createDirectories(bds.resolve("resource_packs/other-copy"));
+        Files.copy(bds.resolve("behavior_packs/modbridge-bp/manifest.json"), localBehavior.resolve("manifest.json"));
+        Files.copy(bds.resolve("resource_packs/modbridge-rp/manifest.json"), sharedResource.resolve("manifest.json"));
+        String behavior = Files.readString(archive.resolve("world_behavior_packs.json"));
+        String resource = Files.readString(archive.resolve("world_resource_packs.json"));
+
+        compilePacks(packs, "next_ingot");
+        assertTrue(BdsInstaller.plan(bds, packs, null).ok());
+        BdsInstaller.apply(bds, packs, null, true);
+        assertEquals(behavior, Files.readString(archive.resolve("world_behavior_packs.json")));
+        assertEquals(resource, Files.readString(archive.resolve("world_resource_packs.json")));
+    }
+
+    @Test
     void 復旧用のコピーをすべて用意できなければ現在のワールドとパックを変えない() throws Exception {
         BdsInstaller.apply(bds, packs, null, true);
         Map<String, String> initial = restoredContents();

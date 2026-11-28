@@ -479,6 +479,7 @@ public final class BdsInstaller {
         if (!System.getProperty("os.name").equals("Linux") || !Files.isRegularFile(root.resolve("bedrock_server"))) {
             return;
         }
+        checkLinuxProcessVisibility();
         try (Stream<Path> entries = Files.list(Path.of("/proc"))) {
             for (Path process : entries.filter(p -> p.getFileName().toString().chars().allMatch(Character::isDigit)).toList()) {
                 if (!isLinuxBdsProcess(process)) {
@@ -502,8 +503,29 @@ public final class BdsInstaller {
     private static boolean isLinuxBdsProcess(Path process) throws IOException {
         try {
             return Files.readString(process.resolve("comm"), StandardCharsets.UTF_8).strip().equals("bedrock_server");
-        } catch (NoSuchFileException | AccessDeniedException ignored) {
+        } catch (NoSuchFileException ignored) {
             return false;
+        } catch (IOException e) {
+            if (Files.notExists(process)) {
+                return false; // 読み取り中に終了して ESRCH になった場合も扱う。
+            }
+            throw new IOException("Linux のプロセス情報を読み取れないため、BDS の停止を確認できない", e);
+        }
+    }
+
+    private static void checkLinuxProcessVisibility() throws IOException {
+        // hidepid によって一覧から PID が消えると、プロセスごとの読み取りでは検知できない。
+        var mounts = Files.readAllLines(Path.of("/proc/self/mounts"), StandardCharsets.UTF_8);
+        for (String mount : mounts) {
+            String[] fields = mount.split(" ", 6);
+            if (fields.length < 4 || !fields[1].equals("/proc") || !fields[2].equals("proc")) {
+                continue;
+            }
+            for (String option : fields[3].split(",")) {
+                if (option.startsWith("hidepid=") && !option.equals("hidepid=0") && !option.equals("hidepid=off")) {
+                    throw new IOException("Linux の /proc でプロセス情報が非表示のため、BDS の停止を確認できない");
+                }
+            }
         }
     }
 

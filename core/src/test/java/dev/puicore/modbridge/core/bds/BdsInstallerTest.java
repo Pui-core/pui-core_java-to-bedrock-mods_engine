@@ -27,6 +27,8 @@ import java.util.zip.ZipOutputStream;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 class BdsInstallerTest {
@@ -120,6 +122,36 @@ class BdsInstallerTest {
             assertTrue(e.getMessage().contains("ロック"), e.getMessage());
         }
         assertEquals(before, snapshot());
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void LOCKがなくても書き込み中のDBでは配置も復旧もしない() throws Exception {
+        Files.delete(world.resolve("db/LOCK"));
+        Path journal = world.resolve("db/000001.log");
+        Files.writeString(world.resolve("db/MANIFEST-000001"), "manifest");
+        Files.writeString(journal, "world state");
+        Map<String, String> beforeApply = snapshot();
+        try (var writer = FileChannel.open(journal, StandardOpenOption.WRITE)) {
+            assertTrue(writer.isOpen());
+            var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+            assertTrue(error.getMessage().contains("ロック"), error.getMessage());
+            assertEquals(beforeApply, snapshot());
+        }
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Files.createFile(world.resolve("db/LOCK")); // 以前の実行で残ったが、使われていない LOCK
+        Map<String, String> beforeRollback = snapshot();
+        try (var writer = FileChannel.open(journal, StandardOpenOption.WRITE)) {
+            assertTrue(writer.isOpen());
+            var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+            assertTrue(error.getMessage().contains("ロック"), error.getMessage());
+            assertEquals(beforeRollback, snapshot());
+        }
+        Files.delete(world.resolve("db/LOCK"));
+        BdsInstaller.rollback(bds, id, true);
+        Map<String, String> after = snapshot();
+        after.keySet().removeIf(path -> path.startsWith("modbridge-backups/"));
+        assertEquals(beforeApply, after);
     }
 
     @Test

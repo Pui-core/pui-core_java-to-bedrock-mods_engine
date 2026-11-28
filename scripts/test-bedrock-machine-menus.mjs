@@ -58,6 +58,7 @@ function harness() {
     const forms = [];
     const timers = new Set();
     const warnings = [];
+    let currentTick = 1000;
     let beforeInteract;
     let onLeave;
     class ActionFormData {
@@ -76,6 +77,7 @@ function harness() {
             afterEvents: { playerLeave: { subscribe: listener => { onLeave = listener; } } }
         },
         system: {
+            get currentTick() { return currentTick; },
             run: callback => callback(),
             runTimeout: callback => { timers.add(callback); return callback; },
             clearRun: callback => timers.delete(callback)
@@ -93,6 +95,7 @@ function harness() {
             return event.cancel;
         },
         leave: player => onLeave({ playerId: player.id }),
+        advanceTicks: ticks => { currentTick += ticks; },
         expire: () => timers.forEach(callback => callback())
     };
 }
@@ -158,6 +161,28 @@ test("visitors, custom roles and interactions already canceled do not open forms
     who.playerPermissionLevel = 1;
     assert.equal(qa.click(who, true, true), true);
     assert.equal(qa.forms.length, 0);
+});
+
+test("selection observes the server deadline even before the cleanup callback runs", async () => {
+    const qa = harness();
+    const onTime = player("on-time");
+    const expired = player("expired");
+    qa.click(onTime);
+    qa.click(expired);
+    qa.advanceTicks(599);
+    qa.forms[0].resolve({ selection: 0 });
+    await settleForms();
+    assert.deepEqual(inventory(onTime), [[recipe.output.item, 1, false]]);
+
+    qa.advanceTicks(1);
+    qa.forms[1].resolve({ selection: 0 });
+    await settleForms();
+    assert.deepEqual(inventory(expired), [[recipe.input.item, 2, false]]);
+
+    qa.click(expired);
+    qa.forms[2].resolve({ selection: 0 });
+    await settleForms();
+    assert.deepEqual(inventory(expired), [[recipe.output.item, 1, false]]);
 });
 
 test("full inventories, custom materials and a failed slot write preserve the inventory", async () => {

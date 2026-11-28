@@ -91,6 +91,7 @@ function registerMachineMenus(rules) {
     async function open(player, target) {
         const playerId = player.id;
         if (sessions.has(playerId) || !canOperate(player, target)) return;
+        const expiresAt = system.currentTick + sessionTicks;
         // このオブジェクトの同一性をセッション ID として使う。クライアントから受け取るのは選択番号だけ。
         sessions.set(playerId, target);
         const timer = system.runTimeout(() => {
@@ -102,7 +103,8 @@ function registerMachineMenus(rules) {
             const response = await form.show(player);
             if (sessions.get(playerId) !== target) return;
             sessions.delete(playerId);
-            if (response.canceled || !Number.isInteger(response.selection) || !canOperate(player, target)) return;
+            if (system.currentTick >= expiresAt || response.canceled || !Number.isInteger(response.selection) ||
+                !canOperate(player, target)) return;
             const recipe = target.station.recipes[response.selection];
             const container = player.getComponent("minecraft:inventory")?.container;
             if (recipe && container) {

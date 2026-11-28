@@ -10,6 +10,7 @@ import dev.puicore.modbridge.core.ir.BridgeIr.Diagnostic;
 import dev.puicore.modbridge.core.ir.BridgeIr.FeaturePlan;
 import dev.puicore.modbridge.core.ir.BridgeIr.Severity;
 import dev.puicore.modbridge.core.ir.IrJson;
+import dev.puicore.modbridge.core.ops.Operations;
 import dev.puicore.modbridge.core.scan.Analyzer;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -66,6 +67,7 @@ public final class Main {
             case "compile" -> compile(rest, out, err);
             case "bds-install" -> bdsInstall(rest, out, err);
             case "bds-rollback" -> bdsRollback(rest, out, err);
+            case "ops-check" -> opsCheck(rest, out, err);
             default -> {
                 err.println("不明なコマンド: " + args[0]);
                 usage(err);
@@ -401,6 +403,25 @@ public final class Main {
         return sha.length() > 12 ? sha.substring(0, 12) + "…" : (sha.isEmpty() ? "-" : sha);
     }
 
+    private static int opsCheck(List<String> args, PrintStream out, PrintStream err) {
+        if (args.isEmpty() || args.size() > 2 || args.getFirst().startsWith("-")
+                || (args.size() == 2 && !args.get(1).equals("--probe"))) {
+            err.println("使い方: modbridge ops-check FILE [--probe]");
+            return USAGE;
+        }
+        try {
+            var result = Operations.check(Operations.read(Path.of(args.getFirst())), args.size() == 2);
+            out.println(Operations.json(result));
+            return result.reachable() ? OK : FAILED;
+        } catch (IllegalArgumentException failure) {
+            err.println("運用設定が不正: " + failure.getMessage());
+            return FAILED;
+        } catch (IOException failure) {
+            err.println("運用設定を読めない: " + failure.getMessage());
+            return IO;
+        }
+    }
+
     private static int doctor(PrintStream out) {
         Doctor.Result result = Doctor.run();
         for (Doctor.Check c : result.checks()) {
@@ -426,6 +447,7 @@ public final class Main {
                                                   compile の出力を BDS のワールドに配置する（既定は dry-run）
                   bds-rollback --bds BDS --backup ID --confirm-stopped
                                                   bds-install のバックアップから元に戻す
+                  ops-check FILE [--probe]        配置の設定を検査し、指定時だけ接続先の応答も観測する
                   （-- の後ろは「-」で始まる名前もファイルとして扱う）
                 終了コード: 0=成功, 1=ERROR 診断あり（読めない JAR を含む）・不正な IR,
                           2=使い方の誤り, 3=IR の書き出し・IR ファイルの読込の失敗

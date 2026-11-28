@@ -41,6 +41,14 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
         String dumpTarget = System.getProperty("modbridge.registryDump");
         boolean stop = Boolean.getBoolean("modbridge.registryDump.stop");
         boolean geyser = FabricLoader.getInstance().isModLoaded("geyser-fabric");
+        String travelConfig = System.getProperty("modbridge.travelConfig");
+        String travelOrigin = System.getProperty("modbridge.travelOrigin");
+        if (travelConfig != null || travelOrigin != null) {
+            if (!geyser) {
+                throw new IllegalStateException("Bedrock 移動には Geyser-Fabric が必要");
+            }
+            ServerTravel.install(travelConfig, travelOrigin);
+        }
 
         boolean permissive = policy == Policy.PERMISSIVE && geyser;
         if (permissive) {

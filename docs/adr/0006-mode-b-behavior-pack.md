@@ -31,6 +31,8 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
   | 作業台のレシピ | `crafting_shaped` → `minecraft:recipe_shaped`、`crafting_shapeless` → `minecraft:recipe_shapeless`（`tags` は `crafting_table`）。材料と結果は、単一のアイテムのものだけ |
   | 加熱レシピ（v0.4.0） | `smelting`、`blasting`、`smoking`、`campfire_cooking` → `minecraft:recipe_furnace`。機器に合わせて `furnace`、`blast_furnace`、`smoker`、`campfire` と `soul_campfire` のタグを使う。材料1種と結果1個に対応する |
 
+- 左右非対称の定形レシピは書式 `1.20.80` の `assume_symmetry: true` で、Java と同じく左右両方の配置を受け付ける。[Bedrock の定形レシピ](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/recipereference/examples/recipedefinitions/recipe_shaped?view=minecraft-bedrock-stable)
+
 - **変換しないレシピ**（理由付きで SKIPPED、`RECIPE_UNSUPPORTED`）:
   - 定形レシピで、pattern の文字と key が対応しないもの（未定義の文字、使われないキー）
   - タグ（`#c:ingots` など）や、複数候補の材料
@@ -108,5 +110,4 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
 - Java のコードで決まる性質は、Mode A で取得した実行時レジストリから補える見込み。実行時レジストリにスタック数・硬さなどを足すのは、将来の課題。
 - レシピのバニラのアイテム ID の対応表は無い。
 - 立方体以外の形、状態を持つブロック、ブロックのドロップ（ルートテーブル）、道具の条件は変換しない。
-- Java の定形レシピは左右反転も受け付けるが、Bedrock 側の反転の指定（`assume_symmetry`）は入れていない。
 - `notConverted` には、サーバー側だけの MOD（Geyser など）も並ぶ。Bedrock の成果物に関係しない MOD を区別していない。

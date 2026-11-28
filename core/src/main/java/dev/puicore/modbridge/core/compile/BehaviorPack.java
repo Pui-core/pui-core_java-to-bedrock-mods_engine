@@ -31,6 +31,7 @@ public final class BehaviorPack {
     /** 1.21.80 以降、ブロックは geometry と material_instances を両方書く必要がある。 */
     static final String FORMAT_VERSION = "1.21.80";
     static final String RECIPE_FORMAT_VERSION = "1.20.10";
+    private static final String MIRRORED_RECIPE_FORMAT_VERSION = "1.20.80";
     private static final String FURNACE_RECIPE_FORMAT_VERSION = "1.12";
     static final String CODE_PROPERTIES_NOTE = "スタック数・硬さ・道具の条件・ドロップなど、Java のコードで決まる性質は変換していない（Bedrock の既定値になる）";
 
@@ -179,6 +180,7 @@ public final class BehaviorPack {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("description", Map.of("identifier", bid));
         body.put("tags", List.of("crafting_table"));
+        String formatVersion = RECIPE_FORMAT_VERSION;
         String key;
         if ("minecraft:crafting_shaped".equals(type)) {
             if (!(r.get("pattern") instanceof JsonArray pattern) || pattern.isEmpty() || pattern.size() > 3
@@ -210,6 +212,11 @@ public final class BehaviorPack {
             }
             body.put("pattern", rows);
             body.put("key", outKeys);
+            // Java の定形レシピは左右反転も受け付ける。
+            if (rows.stream().anyMatch(row -> !row.contentEquals(new StringBuilder(row).reverse()))) {
+                body.put("assume_symmetry", true);
+                formatVersion = MIRRORED_RECIPE_FORMAT_VERSION;
+            }
             key = "minecraft:recipe_shaped";
         } else if ("minecraft:crafting_shapeless".equals(type)) {
             if (!(r.get("ingredients") instanceof JsonArray ingredients) || ingredients.isEmpty() || ingredients.size() > 9) {
@@ -239,7 +246,7 @@ public final class BehaviorPack {
         // Bedrock の 1.20 以降の書式には発見条件が必要なので、変換した材料を使う。
         body.put("unlock", ingredientsForUnlock.stream().map(id -> Map.of("item", id)).toList());
         body.put("result", result);
-        return finishRecipe(RECIPE_FORMAT_VERSION, key, body, vanilla, new ArrayList<>());
+        return finishRecipe(formatVersion, key, body, vanilla, new ArrayList<>());
     }
 
     private static Recipe furnaceRecipe(String bid, JsonObject r, Map<String, String> available, List<String> stations) {

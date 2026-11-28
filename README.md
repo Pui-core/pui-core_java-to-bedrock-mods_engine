@@ -119,7 +119,7 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate --keep-running
 Geyser/Fabric の MOD サーバーと BDS は、認証設定、パック、ワールド、プレイヤーデータを個別に管理します。既存の Paper/Velocity は別の入口とポートで運用できます。Velocity の modern forwarding を使って Java 側も接続する場合は、対応するバックエンドと private な転送経路を用意します。[Velocity の設定](https://docs.papermc.io/velocity/player-information-forwarding/) [Floodgate の設定](https://geysermc.org/wiki/floodgate/setup/)
 
 - **単独サーバー**では `DIRECT` に接続先を1件指定します。認証とパックの受け入れはそのサーバーが行います。
-- **VPS から自宅・WSL へ転送**する場合は、RakNet の公開 UDP ポートを private ネットワーク内の1台・1ポートへ対応付け、戻りの通信も同じ経路に通します。`UDP_FORWARD` は RakNet を対象とします。NetherNet のシグナリングは別です。バックエンドの入口は VPS または VPN からだけ到達できるようにし、公開側とバックエンド側から別々に監視します。
+- **VPS から自宅・WSL へ転送**する場合、現行の NetherNet は `NETHERNET_FORWARD` を使います。Geyser の内蔵シグナリングの TCP と WebRTC の UDP を、同一公開ポートから private ネットワークのバックエンドへそれぞれ転送します。NAT 越しには、到達可能な公開 UDP アドレスとポートを `advertise-addresses` に設定します。バックエンドは VPS または VPN からだけ到達できるようにし、公開側とバックエンド側を別々に監視します。RakNet を提供する旧構成の UDP 転送には `UDP_FORWARD` を使えます。[Geyser のポート転送](https://geysermc.org/wiki/geyser/port-forwarding/) [NetherNet と NAT の設定](https://geysermc.org/blog/preparing-for-nethernet/)
 - **サーバー間の移動**は `BEDROCK_TRANSFER` で運用者が登録した接続先へ、Bedrock クライアントが新しく接続します。移動先で改めて入場判定とパック受け入れが行われます。ワールドや持ち物は各バックエンドのデータを使います。移動を受け付けない端末ではサーバー一覧から接続します。
 
 運用設定の例です。`client` はプレイヤーの端末から接続できるアドレス、`probe` は監視を実行する場所から到達できるアドレスです。同じ通信方式で同じ監視先は登録できません。DNS の別名が同じサーバーを指すかは配備時に確認します。`stateDirectory` は配備先の保存ディレクトリを区別する名前です。実際のサービスにも、それぞれ異なる作業・保存ディレクトリを指定します。
@@ -132,7 +132,7 @@ Geyser/Fabric の MOD サーバーと BDS は、認証設定、パック、ワ�
     {
       "id": "fabric",
       "kind": "GEYSER",
-      "transport": "RAKNET",
+      "transport": "NETHERNET",
       "client": {"host": "fabric.example.org", "port": 19132},
       "probe": {"host": "fabric.internal.example.org", "port": 19132},
       "stateDirectory": "fabric-world"
@@ -154,7 +154,7 @@ modbridge ops-check /etc/modbridge/topology.json
 modbridge ops-check /etc/modbridge/topology.json --probe
 ```
 
-`--probe` は、RakNet では Bedrock のオフライン ping、NetherNet では設定先の TCP 接続の成否をバックエンドごとに JSON へ出力します。観測先が1件でも応答しなければ終了コード1を返します。TCP 接続に成功しても、NetherNet の WebRTC 経路や入場、ワールドの読込、パック適用は実クライアントで確認します。サンプルの Fabric 側では Geyser の transport を raknet または both に設定します。Geyser/Fabric で `-Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric` を付けると、認証済みの Bedrock セッションから `/modbridge-travel bedrock` を実行できます。
+`--probe` は、RakNet では Bedrock のオフライン ping、NetherNet では設定先の TCP 接続の成否をバックエンドごとに JSON へ出力します。観測先が1件でも応答しなければ終了コード1を返します。TCP 接続に成功しても、NetherNet の WebRTC 経路や入場、ワールドの読込、パック適用は実クライアントで確認します。サンプルの Fabric 側では Geyser の `bedrock.transport` を `nethernet` に設定します。Geyser/Fabric で `-Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric` を付けると、認証済みの Bedrock セッションから `/modbridge-travel bedrock` を実行できます。
 
 Linux の Fabric サーバー用 systemd の例です。`fabric` 専用のサービスアカウントを使い、ほかのワールドは別ユニットで管理します。
 

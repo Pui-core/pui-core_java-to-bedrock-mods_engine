@@ -36,7 +36,7 @@ public final class Operations {
     private static final Pattern HOST = Pattern.compile("(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*");
     private static final byte[] RAKNET_MAGIC = HexFormat.of().parseHex("00ffff00fefefefefdfdfdfd12345678");
 
-    public enum Topology { DIRECT, UDP_FORWARD, BEDROCK_TRANSFER }
+    public enum Topology { DIRECT, UDP_FORWARD, NETHERNET_FORWARD, BEDROCK_TRANSFER }
     public enum Kind { GEYSER, BDS }
     public enum Transport { RAKNET, NETHERNET }
     public enum Status { NOT_PROBED, REACHABLE, UNREACHABLE }
@@ -117,6 +117,9 @@ public final class Operations {
             }
             if (plan.topology() == Topology.UDP_FORWARD && backend.transport() != Transport.RAKNET) {
                 throw new IllegalArgumentException("UDP_FORWARD には RakNet のバックエンドが必要: " + backend.id());
+            }
+            if (plan.topology() == Topology.NETHERNET_FORWARD && backend.transport() != Transport.NETHERNET) {
+                throw new IllegalArgumentException("NETHERNET_FORWARD には NetherNet のバックエンドが必要: " + backend.id());
             }
         }
     }

@@ -11,6 +11,7 @@ import com.google.gson.JsonPrimitive;
 import dev.puicore.modbridge.core.scan.SafeArchive;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -272,56 +274,100 @@ public final class BdsInstaller {
     }
 
     /**
-     * ワールドの DB（LevelDB）のロック。BDS が動いていれば、ロックを取れない。
-     * DB がまだ無いワールドでは、ロックの検査を省く（呼出し側の明示だけに頼る）。
+     * LevelDB のロック、または Windows の DB ファイルの書き込み共有拒否を保持する。
+     * DB がまだ無いワールドでは、呼出し側の停止確認だけを使う。
      */
     private static final class WorldLock implements AutoCloseable {
-        private final FileChannel channel;
+        private static final Pattern MUTABLE_LEVELDB_FILE = Pattern.compile("MANIFEST-[0-9]+|[0-9]+\\.log");
+        private final List<FileChannel> channels;
         private final FileLock lock;
 
-        private WorldLock(FileChannel channel, FileLock lock) {
-            this.channel = channel;
+        private WorldLock(List<FileChannel> channels, FileLock lock) {
+            this.channels = channels;
             this.lock = lock;
         }
 
         static WorldLock acquire(Path worldDir) throws IOException {
-            Path lockFile = worldDir.resolve("db").resolve("LOCK");
-            if (!Files.isRegularFile(lockFile)) {
-                return new WorldLock(null, null);
+            Path db = worldDir.resolve("db");
+            if (Files.notExists(db, LinkOption.NOFOLLOW_LINKS)) {
+                return new WorldLock(List.of(), null);
             }
-            FileChannel ch;
-            try {
-                ch = FileChannel.open(lockFile, StandardOpenOption.WRITE);
-            } catch (IOException e) {
-                throw new LockedException(); // Windows では、BDS が開いていると開けない
-            }
-            FileLock l;
-            try {
-                l = ch.tryLock();
-            } catch (OverlappingFileLockException | IOException e) {
-                l = null;
-            }
-            if (l == null) {
-                ch.close();
+            if (!Files.isDirectory(db, LinkOption.NOFOLLOW_LINKS)) {
                 throw new LockedException();
             }
-            return new WorldLock(ch, l);
+            List<FileChannel> opened = new ArrayList<>();
+            try {
+                FileLock lock = null;
+                Path lockFile = db.resolve("LOCK");
+                if (!Files.notExists(lockFile, LinkOption.NOFOLLOW_LINKS)) {
+                    FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+                    opened.add(channel);
+                    lock = channel.tryLock();
+                    if (lock == null) {
+                        throw new LockedException();
+                    }
+                }
+                if (System.getProperty("os.name").startsWith("Windows")) {
+                    acquireWindowsFiles(db, opened);
+                }
+                return new WorldLock(opened, lock);
+            } catch (IOException | UncheckedIOException | ReflectiveOperationException | UnsupportedOperationException
+                    | OverlappingFileLockException failure) {
+                var locked = failure instanceof LockedException e ? e : new LockedException();
+                if (locked != failure) {
+                    locked.addSuppressed(failure);
+                }
+                try {
+                    new WorldLock(opened, null).close();
+                } catch (IOException cleanup) {
+                    locked.addSuppressed(cleanup);
+                }
+                throw locked;
+            }
+        }
+
+        private static void acquireWindowsFiles(Path db, List<FileChannel> opened) throws IOException, ReflectiveOperationException {
+            List<Path> journals;
+            try (Stream<Path> files = Files.list(db)) {
+                journals = files.filter(p -> MUTABLE_LEVELDB_FILE.matcher(p.getFileName().toString()).matches()).toList();
+            }
+            if (journals.isEmpty()) {
+                return;
+            }
+            // Windows の OpenJDK が提供する拡張。利用できなければ停止を確認できない扱いにする。
+            if (!(Class.forName("com.sun.nio.file.ExtendedOpenOption").getField("NOSHARE_WRITE").get(null)
+                    instanceof OpenOption denyWrites)) {
+                throw new LockedException();
+            }
+            for (Path file : journals) {
+                // 読み込みは共有するので、このチャネルを保ったままバックアップできる。
+                opened.add(FileChannel.open(file, StandardOpenOption.READ, denyWrites, LinkOption.NOFOLLOW_LINKS));
+            }
         }
 
         /** ロックを持っている間に呼ぶ（DB の無いワールドでは何もしない）。 */
         void ensureHeld() throws IOException {
-            if (lock != null && !lock.isValid()) {
+            if ((lock != null && !lock.isValid()) || channels.stream().anyMatch(ch -> !ch.isOpen())) {
                 throw new IOException("ワールドの DB のロックが外れた");
             }
         }
 
         @Override
         public void close() throws IOException {
-            if (lock != null) {
-                lock.release();
+            IOException failure = null;
+            for (FileChannel channel : channels) {
+                try {
+                    channel.close(); // このチャネルの FileLock も解放される
+                } catch (IOException e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else {
+                        failure.addSuppressed(e);
+                    }
+                }
             }
-            if (channel != null) {
-                channel.close();
+            if (failure != null) {
+                throw failure;
             }
         }
     }

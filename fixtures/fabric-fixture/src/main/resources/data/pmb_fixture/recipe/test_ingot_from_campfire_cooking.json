@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:campfire_cooking",
+  "ingredient": "pmb_fixture:test_block",
+  "result": {
+    "id": "pmb_fixture:test_ingot"
+  },
+  "cookingtime": 600,
+  "experience": 0.3
+}

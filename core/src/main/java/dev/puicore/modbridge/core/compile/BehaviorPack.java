@@ -21,7 +21,7 @@ import java.util.TreeSet;
  *   <li>アイテム: {@code minecraft:item}。アイコンは item_texture.json の短縮名</li>
  *   <li>ブロック: {@code minecraft:block}。形は {@code minecraft:geometry.full_block}、面は {@code material_instances}</li>
  *   <li>ブロックアイテム: Bedrock がブロックから自動で作るので、ファイルは作らない</li>
- *   <li>レシピ: {@code crafting_shaped} と {@code crafting_shapeless} のうち、材料と結果が単一のアイテムのものだけ</li>
+ *   <li>レシピ: 単一アイテムを材料とする定形・不定形および加熱レシピ</li>
  * </ul>
  *
  * <p>Java のコードで決まる性質（スタック数・硬さ・道具の条件・ドロップ数など）は静的には分からないので、
@@ -31,6 +31,7 @@ public final class BehaviorPack {
     /** 1.21.80 以降、ブロックは geometry と material_instances を両方書く必要がある。 */
     static final String FORMAT_VERSION = "1.21.80";
     static final String RECIPE_FORMAT_VERSION = "1.20.10";
+    private static final String FURNACE_RECIPE_FORMAT_VERSION = "1.12";
     static final String CODE_PROPERTIES_NOTE = "スタック数・硬さ・道具の条件・ドロップなど、Java のコードで決まる性質は変換していない（Bedrock の既定値になる）";
 
     /** ビヘイビアパックでの定義 1 件の変換結果。{@code status} は GENERATED / PARTIAL / SKIPPED。 */
@@ -85,11 +86,9 @@ public final class BehaviorPack {
             }
             String file = "recipes/" + bid.replace(':', '/') + ".json";
             files.put(file, PackCompiler.json(converted.json));
-            List<String> notes = new ArrayList<>(converted.notes);
-            entries.put(subject, new Entry(r.getKey(), "RECIPE", bid, notes.isEmpty() ? "GENERATED" : "PARTIAL", file, List.copyOf(notes)));
-            if (!notes.isEmpty()) {
-                diags.add(new Diagnostic(Severity.WARN, "VANILLA_ID_ASSUMED", r.getKey(), String.join("。", notes)));
-            }
+            List<String> notes = converted.notes().stream().map(RecipeNote::message).toList();
+            entries.put(subject, new Entry(r.getKey(), "RECIPE", bid, notes.isEmpty() ? "GENERATED" : "PARTIAL", file, notes));
+            converted.notes().forEach(note -> diags.add(new Diagnostic(Severity.WARN, note.code(), r.getKey(), note.message())));
         }
         return new Result(files, List.copyOf(entries.values()), diags);
     }
@@ -151,7 +150,9 @@ public final class BehaviorPack {
 
     // ---- レシピ ----
 
-    private record Recipe(Map<String, Object> json, List<String> notes, String reason) {
+    private record RecipeNote(String code, String message) {}
+
+    private record Recipe(Map<String, Object> json, List<RecipeNote> notes, String reason) {
         static Recipe fail(String reason) {
             return new Recipe(null, List.of(), reason);
         }
@@ -159,7 +160,16 @@ public final class BehaviorPack {
 
     private static Recipe recipe(String bid, JsonObject r, Map<String, String> available) {
         String type = str(r.get("type"));
-        List<String> notes = new ArrayList<>();
+        List<String> stations = switch (type) {
+            case "minecraft:smelting" -> List.of("furnace");
+            case "minecraft:blasting" -> List.of("blast_furnace");
+            case "minecraft:smoking" -> List.of("smoker");
+            case "minecraft:campfire_cooking" -> List.of("campfire", "soul_campfire");
+            case null, default -> List.of();
+        };
+        if (!stations.isEmpty()) {
+            return furnaceRecipe(bid, r, available, stations);
+        }
         Set<String> vanilla = new TreeSet<>();
         Set<String> ingredientsForUnlock = new TreeSet<>();
         Map<String, Object> result = result(r.get("result"), available, vanilla);
@@ -224,18 +234,48 @@ public final class BehaviorPack {
             body.put("ingredients", outIngredients);
             key = "minecraft:recipe_shapeless";
         } else {
-            return Recipe.fail("レシピの種類 " + type + " は非対応（作業台のレシピだけ。かまどなどは v0.4.0）");
+            return Recipe.fail("レシピの種類 " + type + " は非対応");
         }
         // Bedrock の 1.20 以降の書式には発見条件が必要なので、変換した材料を使う。
         body.put("unlock", ingredientsForUnlock.stream().map(id -> Map.of("item", id)).toList());
         body.put("result", result);
+        return finishRecipe(RECIPE_FORMAT_VERSION, key, body, vanilla, new ArrayList<>());
+    }
+
+    private static Recipe furnaceRecipe(String bid, JsonObject r, Map<String, String> available, List<String> stations) {
+        Set<String> vanilla = new TreeSet<>();
+        JsonElement material = r.get("ingredient");
+        if (material instanceof JsonObject object && !object.keySet().equals(Set.of("item"))) {
+            return Recipe.fail("加熱材料の指定が単一のアイテムに限定されていない");
+        }
+        String input = ingredient(material, available, vanilla);
+        if (input == null) {
+            return Recipe.fail("加熱材料がタグ・複数候補・変換していないアイテムのどれか（非対応）");
+        }
+        Map<String, Object> output = result(r.get("result"), available, vanilla);
+        if (output == null || !output.get("count").equals(1)) {
+            return Recipe.fail("加熱の結果は、成分のない変換済みアイテム1個に対応する");
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("description", Map.of("identifier", bid));
+        body.put("tags", stations);
+        body.put("input", input);
+        body.put("output", output.get("item"));
+        List<RecipeNote> notes = new ArrayList<>();
+        notes.add(new RecipeNote("RECIPE_COOKING_DEFAULTS", "Java の加熱時間と経験値は変換せず、Bedrock 側の仕様で動作する"));
+        return finishRecipe(FURNACE_RECIPE_FORMAT_VERSION, "minecraft:recipe_furnace", body, vanilla, notes);
+    }
+
+    private static Recipe finishRecipe(String format, String key, Map<String, Object> body, Set<String> vanilla,
+            List<RecipeNote> notes) {
         if (!vanilla.isEmpty()) {
-            notes.add("バニラのアイテム ID は Java と同じとみなした（Bedrock で名前が違うものがある）: " + String.join(", ", vanilla));
+            notes.add(new RecipeNote("VANILLA_ID_ASSUMED",
+                    "バニラのアイテム ID は Java と同じとみなした（Bedrock で名前が違うものがある）: " + String.join(", ", vanilla)));
         }
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("format_version", RECIPE_FORMAT_VERSION);
+        root.put("format_version", format);
         root.put(key, body);
-        return new Recipe(root, notes, null);
+        return new Recipe(root, List.copyOf(notes), null);
     }
 
     /** 材料を Bedrock の識別子にする。タグ・複数候補・変換していないアイテムは null。 */
@@ -253,8 +293,15 @@ public final class BehaviorPack {
             return null; // 成分付きの結果（NBT 相当）は非対応
         }
         int count = 1;
-        if (o.get("count") instanceof JsonPrimitive p && p.isNumber()) {
-            count = p.getAsInt();
+        if (o.has("count")) {
+            if (!(o.get("count") instanceof JsonPrimitive p) || !p.isNumber()) {
+                return null;
+            }
+            try {
+                count = p.getAsBigDecimal().intValueExact();
+            } catch (ArithmeticException | NumberFormatException e1) {
+                return null;
+            }
         }
         if (count < 1 || count > 64) {
             return null;

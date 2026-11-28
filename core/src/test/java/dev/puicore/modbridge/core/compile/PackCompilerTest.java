@@ -575,7 +575,11 @@ class PackCompilerTest {
         m.put("data/rec/recipe/tagged.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"#c:ingots\"],"
                 + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
         m.put("data/rec/recipe/smelt.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"rec:test_block\","
+                + "\"result\":{\"id\":\"rec:test_ingot\",\"count\":2}}"));
+        m.put("data/rec/recipe/smelt_tagged.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"#c:ingots\","
                 + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
+        m.put("data/rec/recipe/smelt_fractional.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"rec:test_block\","
+                + "\"result\":{\"id\":\"rec:test_ingot\",\"count\":1.5}}"));
         m.put("data/rec/recipe/vanilla.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"minecraft:iron_ingot\","
                 + "\"rec:test_ingot\"],\"result\":{\"id\":\"rec:test_block\"}}"));
         m.put("data/rec/recipe/unknown_result.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"rec:test_ingot\"],"
@@ -585,10 +589,58 @@ class PackCompilerTest {
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:tagged").status());
         assertTrue(bpEntry(r, "RECIPE", "rec:tagged").notes().get(0).contains("タグ"));
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt_tagged").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt_fractional").status());
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:unknown_result").status());
         assertEquals("PARTIAL", bpEntry(r, "RECIPE", "rec:vanilla").status());
         assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("VANILLA_ID_ASSUMED") && d.subject().equals("rec:vanilla")));
         assertTrue(r.diagnostics().stream().filter(d -> d.code().equals("RECIPE_UNSUPPORTED")).count() >= 3);
+    }
+
+    @Test
+    void 加熱レシピを機器別に生成し_材料と結果の対応付けを使う() throws IOException {
+        Map<String, byte[]> m = fixture("cook");
+        Map<String, List<String>> stations = Map.of(
+                "smelting", List.of("furnace"),
+                "blasting", List.of("blast_furnace"),
+                "smoking", List.of("smoker"),
+                "campfire_cooking", List.of("campfire", "soul_campfire"));
+        for (String type : stations.keySet()) {
+            m.put("data/cook/recipe/" + type + ".json", u("""
+                    {"type":"minecraft:%s","ingredient":"cook:test_block","result":{"id":"cook:test_ingot"},
+                     "cookingtime":200,"experience":0.7}
+                    """.formatted(type)));
+        }
+        m.put("data/cook/recipe/vanilla_input.json", u("""
+                {"type":"minecraft:blasting","ingredient":"minecraft:raw_gold","result":{"id":"cook:test_ingot"}}
+                """));
+        List<Path> inputs = List.of(jar("cook.jar", m));
+        Path rules = Files.writeString(dir.resolve("cook-rules.json"), """
+                {"schema":"modbridge.adapter-rules","schemaVersion":1,"adapters":[{
+                  "id":"cook:rules","targetMod":"cook","versions":["1.0.0"],"modes":["B"],
+                  "mappings":[{"kind":"BLOCK","source":"cook:test_block","destination":"cook:raw"},
+                              {"kind":"ITEM","source":"cook:test_ingot","destination":"cook:cooked"}]
+                }]}
+                """);
+        var settings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(rules));
+        PackCompiler.Result r = PackCompiler.compile(Analyzer.analyzePaths(inputs), Analyzer.jarFiles(inputs), settings);
+        assertTrue(r.ok(), r.diagnostics().toString());
+        Map<String, byte[]> bp = unzip(r.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        for (var station : stations.entrySet()) {
+            String id = "cook:" + station.getKey();
+            BehaviorPack.Entry entry = bpEntry(r, "RECIPE", id);
+            assertEquals("PARTIAL", entry.status());
+            var recipe = JsonParser.parseString(text(bp, entry.file())).getAsJsonObject();
+            var furnace = recipe.getAsJsonObject("minecraft:recipe_furnace");
+            assertEquals(id, furnace.getAsJsonObject("description").get("identifier").getAsString());
+            assertEquals(station.getValue(), furnace.getAsJsonArray("tags").asList().stream().map(e -> e.getAsString()).toList());
+            assertEquals("cook:raw", furnace.get("input").getAsString());
+            assertEquals("cook:cooked", furnace.get("output").getAsString());
+            assertFalse(furnace.has("unlock"));
+            assertTrue(r.diagnostics().stream().anyMatch(d -> d.subject().equals(id) && d.code().equals("RECIPE_COOKING_DEFAULTS")));
+            assertFalse(r.diagnostics().stream().anyMatch(d -> d.subject().equals(id) && d.code().equals("VANILLA_ID_ASSUMED")));
+        }
+        assertEquals(2, bpEntry(r, "RECIPE", "cook:vanilla_input").notes().size());
     }
 
     @Test

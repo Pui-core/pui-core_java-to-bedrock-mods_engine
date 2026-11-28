@@ -57,6 +57,7 @@ jobs:
           [ "$(sp_val LOADER)" = "$(cat_val fabric-loader)" ] || { echo "不一致: spike LOADER"; fail=1; }
           root_ver="$(sed -n 's/^version=//p' gradle.properties)"
           [ "$(prop_val platform-fabric core_version)" = "$root_ver" ] || { echo "不一致: core_version と version"; fail=1; }
+          [ "$(prop_val platform-fabric mod_version)" = "$root_ver" ] || { echo "不一致: mod_version と version"; fail=1; }
           exit $fail
       - uses: actions/setup-java@v4
         with:

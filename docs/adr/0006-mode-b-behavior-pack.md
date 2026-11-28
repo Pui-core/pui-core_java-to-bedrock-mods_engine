@@ -28,14 +28,16 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
   | アイテム | `minecraft:item`。`minecraft:icon` の `textures.default` に、item_texture.json の短縮名を書く。名前は `minecraft:display_name` で `item.<id>.name` を参照する |
   | ブロック | `minecraft:block`。形は `minecraft:geometry.full_block`。面は `material_instances` で、全面が同じなら `*` だけ、違う面があれば側面（north）を `*` にして違う面だけを書く。描画方法はリソースパックで判定した `render`（opaque / alpha_test / blend） |
   | ブロックアイテム | ファイルを作らない（Bedrock がブロックから自動で作る） |
-  | レシピ | `crafting_shaped` → `minecraft:recipe_shaped`、`crafting_shapeless` → `minecraft:recipe_shapeless`（`tags` は `crafting_table`）。材料と結果は、単一のアイテムのものだけ |
+  | 作業台のレシピ | `crafting_shaped` → `minecraft:recipe_shaped`、`crafting_shapeless` → `minecraft:recipe_shapeless`（`tags` は `crafting_table`）。材料と結果は、単一のアイテムのものだけ |
+  | 加熱レシピ（v0.4.0） | `smelting`、`blasting`、`smoking`、`campfire_cooking` → `minecraft:recipe_furnace`。機器に合わせて `furnace`、`blast_furnace`、`smoker`、`campfire` と `soul_campfire` のタグを使う。材料1種と結果1個に対応する |
 
 - **変換しないレシピ**（理由付きで SKIPPED、`RECIPE_UNSUPPORTED`）:
   - 定形レシピで、pattern の文字と key が対応しないもの（未定義の文字、使われないキー）
   - タグ（`#c:ingots` など）や、複数候補の材料
   - 成分付きの結果
   - このパックで変換していない MOD のアイテム
-  - 作業台以外の種類（かまどなど。v0.4.0）
+  - 加熱レシピの複数個の結果、醸造・鍛冶などの非対応の種類
+- **加熱時間と経験値**: Bedrock の加熱レシピでは指定できないので、Bedrock 側の仕様を使う。対応表は PARTIAL とし、`RECIPE_COOKING_DEFAULTS`（WARN）を出す。 [Bedrock の加熱レシピ仕様](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/recipereference/examples/recipedefinitions/recipe_furnace?view=minecraft-bedrock-stable)
 - **バニラのアイテム**: 材料・結果にバニラのアイテムがあるレシピは、ID が Java と同じとみなして変換する。ただし PARTIAL にし、`VANILLA_ID_ASSUMED`（WARN）で該当する ID を示す。Bedrock では名前が違うバニラのアイテムがあるため。
 
 ### 黙って欠落させない
@@ -77,7 +79,7 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
   - ブロックアイテムのファイルを作らないこと
   - RP への依存と `.mcaddon` の中身
   - `JAVA_LOGIC_NOT_CONVERTED` が出ること
-  - タグ・かまど・未変換の結果を SKIPPED にすること
+  - v0.3.0 で非対応だったタグ・かまど・未変換の結果を SKIPPED にすること
   - バニラの ID を PARTIAL にすること
   - 4 つの成果物でのキャッシュの検証と、対応表を書き換えたキャッシュを使わないこと
   - レシピの識別子の衝突で何も作らないこと
@@ -97,6 +99,7 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
 - ワールドを保存して開き直した後、加工台と鍛冶台が同じ場所にあり、残った材料と加工結果が所持品に保持された。
 - Bedrock のコンテンツログで、`unlock` がない 1.20 以降のレシピを読み込めないことを確認した。変換後の材料 ID を解放条件に登録すると、レシピブックに表示される。作業台でブロック1個からインゴット9個を取得し、定形レシピでブロック1個に戻せることを確認した。Java の進捗に基づく解放条件の変換は対象外。
 - レシピ修正は PR #25 で先に取り込んだ。加工ルールを含まない PR #25 単体のパックでも、純正クライアントで作業台の両方向のレシピを確認した。
+- v0.4.0 の fixture の加熱レシピ4種は Java 26.3 の実行時レジストリに登録された。生成パックを入れた Windows の隔離ワールドでは、かまど・溶鉱炉・燻製器の出力欄にテストインゴットが入り、通常の焚き火と魂の焚き火からも同じアイテムを回収できた。
 
 ## 未検証・既知の制約
 

@@ -2,8 +2,8 @@
 
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
-> **現在の状態: v0.0.1 → v0.1.0 開発中**
-> Windows 版 Bedrock のローカルワールドで単純なブロック素材の描画を確認しました。ビルド基盤、MOD の静的解析と診断（`scan` / `validate` / `report`）、アドオン生成の試作（`compile`）、検証用の fixture MOD、接続スパイク用スクリプトを提供しています。任意の MOD の互換は保証しません。
+> **v0.4.0 開発版**
+> Fabric/Geyser と Bedrock のローカルワールドで、自作 fixture と Compressed Blocks の加工を確認しました。公式 BDS での受け入れ試験が残っています。
 
 ## 対応モード
 
@@ -47,7 +47,7 @@ modbridge compile mods/ --out build/pack --cache .modbridge-cache
 # build/pack/ に modbridge-rp.mcpack（見た目）、modbridge-bp.mcpack（定義）、modbridge.mcaddon（両方）、mapping.json（対応表）
 ```
 
-単純なモデル（平面アイテム、立方体のブロック）と、作業台のレシピだけを変換します。それ以外は、理由を付けて対応表（`mapping.json`）で SKIPPED にします。Java のコードで決まる性質（スタック数・硬さなど）と Java のロジックは変換せず、そのことを対応表と診断に書きます。解析に ERROR があるときや、ID が衝突したときは何も作らず、出力フォルダーも変更しません。Windows 版 26.65 のローカルワールドで、立方体ブロックの面の向き・透過・日本語名を確認済みです。BDS の動作は未検証です。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
+平面アイテムと立方体のブロックに加え、作業台、かまど、溶鉱炉、燻製器、焚き火の単純なレシピを変換します。加熱レシピは材料1種と結果1個に対応し、時間と経験値には Bedrock 側の仕様を使います。非対応の定義と Java のコードで決まる性質は、対応表（`mapping.json`）と診断に理由を出します。解析に ERROR がある場合や ID が衝突した場合は、出力フォルダーを変更しません。Windows 版 26.65 のローカルワールドで、立方体ブロックの面の向き・透過・日本語名を確認済みです。詳しくは [ADR-0004](docs/adr/0004-asset-compiler-and-mapping.md) と [ADR-0006](docs/adr/0006-mode-b-behavior-pack.md) にあります。
 
 ### BDS への配置
 
@@ -61,7 +61,7 @@ modbridge bds-rollback --bds /path/to/bedrock-server --backup <ID> --confirm-sto
 
 ## fixture MOD
 
-`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` と、レシピ 2 つ（インゴット 9 個 ⇔ ブロック）を登録します。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
+`fixtures/fabric-fixture` は検証用の自作 MOD です。独自アイテム `pmb_fixture:test_ingot`、独自ブロック `pmb_fixture:test_block`、素材を持たないコード専用のアイテム `pmb_fixture:code_only_marker` を登録します。作業台ではインゴット9個とブロック1個を相互に変換し、かまど・溶鉱炉・燻製器・焚き火ではブロック1個をインゴット1個に変換できます。Minecraft 本体を取得するので、ルートとは別のビルドにしています。
 
 ```sh
 cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-0.0.4.jar
@@ -75,7 +75,7 @@ cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-
 - **実行時レジストリの取得**: JVM 引数 `-Dmodbridge.registryDump=<file>` を付けると、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出します（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
 
 ```sh
-cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.2.0.jar（Geyser の API を取得するため、初回はネットワークが要る）
+cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.4.0-SNAPSHOT.jar（初回は Geyser の API を取得）
 ```
 
 ビルド済みなら、接続スパイクのスクリプトが自動で組み込み、`local/spike-server/registry-dump.json` に書き出します。
@@ -84,7 +84,11 @@ cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.2
 
 Fabric の `fabric.mod.json` に `modbridge-adapter` エントリーポイントを登録し、`Adapter` を実装します。運用者が JVM 引数 `-Dmodbridge.adapters.trusted=<提供元MODのID>` で許可した提供元から、対象 MOD の版とモードが一致するものを読み込みます。複数の提供元はカンマで区切ります。
 
-fixture 0.0.4 に含まれる `FixtureMachineAdapter` は、`pmb_fixture` を許可すると `pmb_fixture:test_block` を加工台にします。Bedrock から操作すると、銅インゴット2個を試験用インゴット1個に交換する画面が開きます。応答は30秒以内に1回使えます。加工時に距離、権限、ブロック、材料、出力先の空きを確認し、結果をアクションバーで知らせます。スニーク中は通常どおりブロックを操作できます。
+アダプターのビルドでは PuiModBridge のチェックアウトを Gradle の `includeBuild` で参照し、`dev.puicore.modbridge:core:0.4.0-SNAPSHOT` を `compileOnly` にします。実行時の `core` は `modbridge-fabric` が供給します。 [fixture の設定](fixtures/fabric-fixture/settings.gradle) · [fixture の依存指定](fixtures/fabric-fixture/build.gradle) · [エントリーポイント](fixtures/fabric-fixture/src/main/resources/fabric.mod.json)
+
+`descriptor()` で API 版、対象 MOD ID、対応する版の文字列、`Mode.A`、`MACHINE_MENU` を宣言し、起動時の `register()` でメニューを登録します。終了処理が必要な場合は `shutdown()` を実装します。メニューとレシピには名前空間付き ID を付け、加工台・材料・結果は Java の登録 ID で指定します。 [Adapter API](core/src/main/java/dev/puicore/modbridge/core/adapter/Adapter.java) · [動作するサンプル](fixtures/fabric-fixture/src/main/java/dev/puicore/modbridge/fixture/FixtureMachineAdapter.java)
+
+fixture の `pmb_fixture` を許可すると、`pmb_fixture:test_block` が加工台になり、銅インゴット2個を試験用インゴット1個に交換できます。応答は30秒以内に1回使えます。加工時に距離、権限、ブロック、材料、出力先の空きを確認し、結果をアクションバーで知らせます。スニーク中は通常どおりブロックを操作できます。
 
 `-Dmodbridge.adapters.rules=<JSONファイル>` では、対象の MOD・版・モードと加工内容を宣言できます。[Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)を指定すると、Bedrock から鍛冶台を操作して丸石9個を圧縮できます。ルールはサーバーの運用者が指定します。
 

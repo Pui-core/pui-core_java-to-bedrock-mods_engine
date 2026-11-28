@@ -95,6 +95,18 @@ class BdsInstallerTest {
         return out;
     }
 
+    private Map<String, String> restoredContents() throws IOException {
+        Map<String, String> out = contentsWithoutLockFile();
+        out.keySet().removeIf(path -> path.startsWith("modbridge-backups/"));
+        return out;
+    }
+
+    private Map<String, String> contentsWithoutLockFile() throws IOException {
+        Map<String, String> out = snapshot();
+        assertEquals("", out.remove(BdsInstaller.OPERATION_LOCK_FILE), "空のファイルを後続の操作でも同じロック先に使う");
+        return out;
+    }
+
     @Test
     void dry_runは計画だけを返して何も変更しない() throws IOException {
         Map<String, String> before = snapshot();
@@ -143,7 +155,7 @@ class BdsInstallerTest {
             var e = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
             assertTrue(e.getMessage().contains("ロック"), e.getMessage());
         }
-        assertEquals(before, snapshot());
+        assertEquals(before, contentsWithoutLockFile());
     }
 
     @Test
@@ -158,7 +170,7 @@ class BdsInstallerTest {
             var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, "Archive", true));
             assertTrue(error.getMessage().contains("ロック"), error.getMessage());
         }
-        assertEquals(before, snapshot());
+        assertEquals(before, contentsWithoutLockFile());
         BdsInstaller.apply(bds, packs, "Archive", true);
         assertTrue(Files.isRegularFile(alternate.resolve("world_resource_packs.json")));
         assertEquals(OTHER, Files.readString(world.resolve("world_behavior_packs.json")));
@@ -179,9 +191,26 @@ class BdsInstallerTest {
         }
         assertEquals(installed, snapshot());
         BdsInstaller.rollback(bds, id, true);
-        Map<String, String> restored = snapshot();
-        restored.keySet().removeIf(path -> path.startsWith("modbridge-backups/"));
-        assertEquals(original, restored);
+        assertEquals(original, restoredContents());
+    }
+
+    @Test
+    void DBロックの無いワールドでも別の配置と復旧は書き込めない() throws Exception {
+        Files.delete(world.resolve("db/LOCK"));
+        Map<String, String> original = snapshot();
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Map<String, String> installed = snapshot();
+        try (var mutation = BdsInstaller.MutationLock.acquire(bds)) {
+            mutation.ensureHeld();
+            assertTrue(BdsInstaller.plan(bds, packs, null).ok(), "実行中でも dry-run は可能");
+            var apply = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+            var rollback = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+            assertTrue(apply.getMessage().contains("ModBridge の配置または復旧を実行中"), apply.getMessage());
+            assertTrue(rollback.getMessage().contains("ModBridge の配置または復旧を実行中"), rollback.getMessage());
+        }
+        assertEquals(installed, snapshot());
+        BdsInstaller.rollback(bds, id, true);
+        assertEquals(original, restoredContents());
     }
 
     @Test
@@ -196,8 +225,8 @@ class BdsInstallerTest {
             assertTrue(writer.isOpen());
             var error = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
             assertTrue(error.getMessage().contains("ロック"), error.getMessage());
-            assertEquals(beforeApply, snapshot());
         }
+        assertEquals(beforeApply, contentsWithoutLockFile());
         String id = BdsInstaller.apply(bds, packs, null, true);
         Files.createFile(world.resolve("db/LOCK")); // 以前の実行で残ったが、使われていない LOCK
         Map<String, String> beforeRollback = snapshot();
@@ -209,9 +238,7 @@ class BdsInstallerTest {
         }
         Files.delete(world.resolve("db/LOCK"));
         BdsInstaller.rollback(bds, id, true);
-        Map<String, String> after = snapshot();
-        after.keySet().removeIf(path -> path.startsWith("modbridge-backups/"));
-        assertEquals(beforeApply, after);
+        assertEquals(beforeApply, restoredContents());
     }
 
     @Test
@@ -244,9 +271,7 @@ class BdsInstallerTest {
         Map<String, String> before = snapshot();
         String id = BdsInstaller.apply(bds, packs, null, true);
         BdsInstaller.rollback(bds, id, true);
-        Map<String, String> after = snapshot();
-        after.keySet().removeIf(k -> k.startsWith("modbridge-backups/"));
-        assertEquals(before, after);
+        assertEquals(before, restoredContents());
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, "../../etc", true));
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, false));
     }
@@ -257,9 +282,7 @@ class BdsInstallerTest {
         Map<String, String> before = snapshot();
         var e = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
         assertTrue(e.getMessage().contains("元に戻した"), e.getMessage());
-        Map<String, String> after = snapshot();
-        after.keySet().removeIf(k -> k.startsWith("modbridge-backups/"));
-        assertEquals(before, after);
+        assertEquals(before, restoredContents());
     }
 
     @Test

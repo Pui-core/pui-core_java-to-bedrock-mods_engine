@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 final class BedrockSounds {
     private static final Pattern NAMESPACE = Pattern.compile("[a-z0-9_][a-z0-9_-]{0,63}");
     private static final Pattern EVENT = Pattern.compile("[a-z0-9_][a-z0-9_.-]{0,127}");
-    private static final Pattern PATH = Pattern.compile("[a-z0-9_-]+(?:[./-][a-z0-9_-]+)*");
+    private static final Pattern PATH = Pattern.compile("[a-z0-9_-]+(?:[./][a-z0-9_-]+)*");
     private static final Set<String> EVENT_FIELDS = Set.of("sounds", "subtitle", "replace");
     private static final Set<String> CLIP_FIELDS = Set.of("name", "type", "weight", "volume", "pitch", "stream", "preload");
 
@@ -84,7 +84,7 @@ final class BedrockSounds {
             }
             String ref = string(clip.isJsonObject() ? settings.get("name") : clip);
             String[] parts = ref.split(":", -1);
-            if (parts.length != 2 || !mod.equals(parts[0]) || !PATH.matcher(parts[1]).matches()) {
+            if (parts.length != 2 || !mod.equals(parts[0]) || parts[1].length() > 160 || !PATH.matcher(parts[1]).matches()) {
                 throw new IllegalArgumentException("音声は自 MOD の明示的な namespaced ID を指定する");
             }
             String source = "assets/" + mod + "/sounds/" + parts[1] + ".ogg";
@@ -95,7 +95,7 @@ final class BedrockSounds {
             JsonObject definition = new JsonObject();
             definition.addProperty("name", target);
             number(settings, definition, "weight", 1, 1000, true);
-            number(settings, definition, "volume", 0.001, 16, false);
+            number(settings, definition, "volume", 0, 16, false);
             number(settings, definition, "pitch", 0.001, 16, false);
             Boolean stream = flag(settings, "stream");
             if (stream != null) {
@@ -110,15 +110,23 @@ final class BedrockSounds {
 
     /** 読み込んだ音声がすべて使用できる場合にイベントを追加する。 */
     static Set<String> add(Plan plan, SafeArchive archive, Map<String, byte[]> files, Map<String, JsonObject> definitions,
-            List<PackCompiler.Entry> entries, List<Diagnostic> diagnostics) {
+            List<PackCompiler.Entry> entries, List<Diagnostic> diagnostics, long remaining) {
         Set<String> used = new TreeSet<>();
         boolean complete = plan.complete();
         for (Event event : plan.events()) {
             if (event.clips().stream().anyMatch(clip -> !ogg(archive.text(clip.source())))) {
-                warn(diagnostics, event.javaId(), "Ogg のヘッダーが不正");
+                warn(diagnostics, event.javaId(), "Vorbis の Ogg を読み取れないか、任意素材の読込上限を超えた");
                 complete = false;
                 continue;
             }
+            long size = event.clips().stream().filter(clip -> !files.containsKey(clip.target() + ".ogg"))
+                    .map(Clip::source).distinct().mapToLong(source -> archive.text(source).length).sum();
+            if (size > remaining) {
+                warn(diagnostics, event.javaId(), "サウンド素材の容量上限を超えた");
+                complete = false;
+                continue;
+            }
+            remaining -= size;
             JsonObject value = new JsonObject();
             value.addProperty("category", "neutral");
             JsonArray clips = new JsonArray();
@@ -142,7 +150,14 @@ final class BedrockSounds {
     }
 
     private static boolean ogg(byte[] data) {
-        return data != null && data.length >= 27 && data[0] == 'O' && data[1] == 'g' && data[2] == 'g' && data[3] == 'S' && data[4] == 0;
+        if (data == null || data.length < 35 || data[0] != 'O' || data[1] != 'g' || data[2] != 'g' || data[3] != 'S'
+                || data[4] != 0 || (data[5] & 2) == 0) {
+            return false;
+        }
+        int segments = Byte.toUnsignedInt(data[26]);
+        int packet = 27 + segments;
+        return segments > 0 && data.length - packet >= 7 && Byte.toUnsignedInt(data[27]) >= 7
+                && data[packet] == 1 && new String(data, packet + 1, 6, StandardCharsets.US_ASCII).equals("vorbis");
     }
 
     private static String string(JsonElement value) {

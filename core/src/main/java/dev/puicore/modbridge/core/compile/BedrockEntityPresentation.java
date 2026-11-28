@@ -42,9 +42,11 @@ final class BedrockEntityPresentation {
             return new Plan(path, List.of());
         }
         try {
-            JsonObject root = GSON.fromJson(new String(archive.text(path), StandardCharsets.UTF_8), JsonObject.class);
-            if (!NAME.matcher(mod).matches() || mod.equals("minecraft") || root == null
-                    || !Set.of("schemaVersion", "entities").equals(root.keySet())
+            JsonElement parsed = GSON.fromJson(new String(archive.text(path), StandardCharsets.UTF_8), JsonElement.class);
+            if (!NAME.matcher(mod).matches() || mod.equals("minecraft")) {
+                throw new IllegalArgumentException("MOD ID は Bedrock のカスタム名前空間に使える [a-z0-9_] にする");
+            }
+            if (!(parsed instanceof JsonObject root) || !Set.of("schemaVersion", "entities").equals(root.keySet())
                     || integer(root.get("schemaVersion"), 1, 1) != 1
                     || !(root.get("entities") instanceof JsonArray entities) || entities.isEmpty() || entities.size() > 64) {
                 throw new IllegalArgumentException("schemaVersion 1 と 1〜64 件の entities を指定する");
@@ -65,7 +67,7 @@ final class BedrockEntityPresentation {
             String id = text(config.get("id"));
             String texture = text(config.get("texture"));
             String axis = text(config.get("axis"));
-            if (!NAME.matcher(id).matches() || !ids.add(id) || !TEXTURE.matcher(texture).matches()
+            if (!NAME.matcher(id).matches() || !ids.add(id) || texture.length() > 160 || !TEXTURE.matcher(texture).matches()
                     || !Set.of("x", "y", "z").contains(axis)) {
                 throw new IllegalArgumentException("id、textures 以下のパス、回転軸のいずれかが不正か id が重複: " + id);
             }
@@ -98,8 +100,8 @@ final class BedrockEntityPresentation {
                     throw new IllegalArgumentException("テクスチャが JAR に無い: " + entity.texture());
                 }
                 image = Png.inspect(png);
-                if (image.width() < 32 || image.height() < 16) {
-                    throw new IllegalArgumentException("回転体のテクスチャは 32×16 以上にする: " + entity.texture());
+                if (image.width() != 32 || image.height() != 16) {
+                    throw new IllegalArgumentException("回転体のテクスチャは 32×16 px にする: " + entity.texture());
                 }
             } catch (Png.PngException failure) {
                 throw new IllegalArgumentException(entity.texture() + ": " + failure.getMessage(), failure);

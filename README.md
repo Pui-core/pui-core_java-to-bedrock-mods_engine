@@ -2,8 +2,8 @@
 
 Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしのクライアントで遊べるようにする OSS 互換エンジンです。サーバーでの利用を必須要件にしています。設計方針は [Epic #1](https://github.com/Pui-core/pui-core_java-to-bedrock-mods_engine/issues/1) にあります。
 
-> **v0.4.0 開発版**
-> Fabric/Geyser と Bedrock のローカルワールドで、自作 fixture と Compressed Blocks の加工を確認しました。公式 BDS ではサーバー側の読込・更新・復旧を確認済みです。BDS 経由での複数人参加と加工操作の受け入れ試験が残っています。
+> **v0.7.0 開発版**
+> 自作 fixture と Compressed Blocks の加工、公式 BDS での PC・スマートフォンの参加と再起動を検証しました。開発版では回転体・音と Create の静的プレビューを追加しました。新機能のクライアント実機試験は後の工程です。
 
 ## 対応モード
 
@@ -75,7 +75,7 @@ cd fixtures/fabric-fixture && ./gradlew build   # build/libs/pmb-fabric-fixture-
 - **実行時レジストリの取得**: JVM 引数 `-Dmodbridge.registryDump=<file>` を付けると、MOD が実際に登録したアイテム・ブロック・レシピを JSON に書き出します（`-Dmodbridge.registryDump.stop=true` を足すと、書き出した後にサーバーを止めます）。
 
 ```sh
-cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.4.0-SNAPSHOT.jar（初回は Geyser の API を取得）
+cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.7.0-SNAPSHOT.jar（初回は Geyser の API を取得）
 ```
 
 ビルド済みなら、接続スパイクのスクリプトが自動で組み込み、`local/spike-server/registry-dump.json` に書き出します。
@@ -84,7 +84,7 @@ cd platform-fabric && ./gradlew build          # build/libs/modbridge-fabric-0.4
 
 Fabric の `fabric.mod.json` に `modbridge-adapter` エントリーポイントを登録し、`Adapter` を実装します。運用者が JVM 引数 `-Dmodbridge.adapters.trusted=<提供元MODのID>` で許可した提供元から、対象 MOD の版とモードが一致するものを読み込みます。複数の提供元はカンマで区切ります。
 
-アダプターのビルドでは PuiModBridge のチェックアウトを Gradle の `includeBuild` で参照し、`dev.puicore.modbridge:core:0.4.0-SNAPSHOT` を `compileOnly` にします。実行時の `core` は `modbridge-fabric` が供給します。 [fixture の設定](fixtures/fabric-fixture/settings.gradle) · [fixture の依存指定](fixtures/fabric-fixture/build.gradle) · [エントリーポイント](fixtures/fabric-fixture/src/main/resources/fabric.mod.json)
+アダプターのビルドでは PuiModBridge のチェックアウトを Gradle の `includeBuild` で参照し、`dev.puicore.modbridge:core:0.7.0-SNAPSHOT` を `compileOnly` にします。実行時の `core` は `modbridge-fabric` が供給します。 [fixture の設定](fixtures/fabric-fixture/settings.gradle) · [fixture の依存指定](fixtures/fabric-fixture/build.gradle) · [エントリーポイント](fixtures/fabric-fixture/src/main/resources/fabric.mod.json)
 
 `descriptor()` で API 版、対象 MOD ID、対応する版の文字列、`Mode.A`、`MACHINE_MENU` を宣言し、起動時の `register()` でメニューを登録します。終了処理が必要な場合は `shutdown()` を実装します。メニューとレシピには名前空間付き ID を付け、加工台・材料・結果は Java の登録 ID で指定します。 [Adapter API](core/src/main/java/dev/puicore/modbridge/core/adapter/Adapter.java) · [動作するサンプル](fixtures/fabric-fixture/src/main/java/dev/puicore/modbridge/fixture/FixtureMachineAdapter.java)
 
@@ -144,9 +144,9 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate --keep-running
 
 ## エンティティ・音と Create の段階試験
 
-Mode B では、MOD の JAR に `assets/<mod>/modbridge/presentation.json` を置くと、回転エンティティの見た目とサーバー定義を RP・BP に出力します。`schemaVersion: 1`、`entities` の各要素に `id`、`texture`（`entity/<name>`）、`axis`（`x`・`y`・`z`）、`rpm`（1〜120）を指定します。`smoke: true` を付けると回転中に煙を出します。PNG は自 MOD の `textures/entity/` に置き、32×16 px 以上とします。ひとつの回転体につきクライアントに同期する真偽値は1個で、回転角はクライアントが計算します。Java MOD の AI、レンダラー、動的な衝突形状は変換対象外です。[Bedrock エンティティプロパティ](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontoentityproperties?view=minecraft-bedrock-stable)
+Mode B では、MOD の JAR に `assets/<mod>/modbridge/presentation.json` を置くと、回転エンティティの見た目とサーバー定義を RP・BP に出力します。`schemaVersion: 1`、`entities` の各要素に `id`、`texture`（`entity/<name>`）、`axis`（`x`・`y`・`z`）、`rpm`（1〜120）を指定します。`smoke: true` を付けると回転中に煙を出します。PNG は自 MOD の `textures/entity/` に置き、32×16 px とします。ひとつの回転体につきクライアントに同期する真偽値は1個で、回転角はクライアントが計算します。Java MOD の AI、レンダラー、動的な衝突形状は変換対象外です。[Bedrock エンティティプロパティ](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontoentityproperties?view=minecraft-bedrock-stable)
 
-`assets/<mod>/sounds.json` の自 MOD に対する直接の namespaced Ogg 参照を `modbridge.<mod>.<event>` として RP に出力します。イベント参照、字幕、Java の再生トリガーや減衰設定は個別対応の範囲です。fixture のパックを生成すると、次のコマンドで回転体と音を呼び出せます。回転体を操作しても回転のオン・オフを切り替えられます。[Bedrock サウンド](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontosound?view=minecraft-bedrock-stable)
+`assets/<mod>/sounds.json` の自 MOD に対する直接の名前空間付き Ogg Vorbis 参照を `modbridge.<mod>.<event>` として RP に出力します。イベント参照、字幕、Java の再生トリガーや減衰設定は個別対応の範囲です。fixture のパックを生成すると、次のコマンドで回転体と音を呼び出せます。回転体を操作すると回転のオン・オフを切り替える設計です。表示、煙、音、操作の実機結果は後日記録します。[Bedrock サウンド](https://learn.microsoft.com/en-us/minecraft/creator/documents/introductiontosound?view=minecraft-bedrock-stable)
 
 ```text
 /summon pmb_fixture:test_rotor
@@ -164,7 +164,7 @@ modbridge create-preview /path/to/create.jar --out /path/to/preview
 
 | 対象 | Mode A | Mode B |
 | --- | --- | --- |
-| 静的素材 | リソースのプレビュー。Geyser での表示は実機確認待ち | アイコンと単純ブロックの試験用アドオン |
+| 静的素材 | Geyser への登録とクライアント表示は確認待ち | アイコンと単純ブロックの試験用アドオン |
 | 回転軸・歯車 | Create のサーバーが持つ回転・軸方向を送るアダプターが必要 | 回転体 fixture は実装済み。Create の動力ネットワークは未対応 |
 | 加工機 | Create のレシピ、入出力、状態の連携が必要 | 既存の宣言加工ルールを利用可能。Create の加工ロジックは未対応 |
 | コンベア | 運搬中のアイテムの追跡、表示と当たり判定が必要 | 未対応 |

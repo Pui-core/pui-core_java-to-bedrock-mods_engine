@@ -701,8 +701,13 @@ class PackCompilerTest {
         var png = new ByteArrayOutputStream();
         ImageIO.write(new BufferedImage(32, 16, BufferedImage.TYPE_INT_RGB), "png", png);
         input.put("assets/rotor/textures/entity/shaft.png", png.toByteArray());
-        var ogg = new byte[28];
+        var ogg = new byte[35];
         System.arraycopy(u("OggS"), 0, ogg, 0, 4);
+        ogg[5] = 2;
+        ogg[26] = 1;
+        ogg[27] = 7;
+        ogg[28] = 1;
+        System.arraycopy(u("vorbis"), 0, ogg, 29, 6);
         input.put("assets/rotor/sounds/start.ogg", ogg);
         input.put("assets/rotor/sounds.json", u("""
                 {"start":{"sounds":[{"name":"rotor:start","weight":2}]},
@@ -725,11 +730,50 @@ class PackCompilerTest {
         assertTrue(result.mapping().behavior().stream().anyMatch(e -> e.kind().equals("ENTITY")));
         assertArrayEquals(result.outputs().get(PackCompiler.ADDON_FILE), compile(List.of(jar)).outputs().get(PackCompiler.ADDON_FILE));
 
+        input.put("assets/rotor/sounds/start.ogg", new byte[(8 << 20) + 1]);
+        var hugeSound = compile(List.of(jar("huge-sound.jar", input)));
+        assertTrue(hugeSound.ok(), () -> hugeSound.diagnostics().toString());
+        assertTrue(hugeSound.diagnostics().stream().anyMatch(d -> d.code().equals("SOUND_UNSUPPORTED")));
+        assertTrue(hugeSound.mapping().entries().stream().anyMatch(e -> e.kind().equals("ENTITY")));
+        assertFalse(hugeSound.mapping().entries().stream().anyMatch(e -> e.kind().equals("SOUND")));
+
+        var oversizedTexture = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(64, 32, BufferedImage.TYPE_INT_RGB), "png", oversizedTexture);
+        input.put("assets/rotor/textures/entity/shaft.png", oversizedTexture.toByteArray());
+        assertFalse(compile(List.of(jar("oversized-rotor-texture.jar", input))).ok());
         input.remove("assets/rotor/textures/entity/shaft.png");
         var invalid = compile(List.of(jar("invalid-rotor.jar", input)));
         assertFalse(invalid.ok());
         assertTrue(invalid.outputs().isEmpty());
         assertTrue(invalid.diagnostics().stream().anyMatch(d -> d.code().equals("ENTITY_PRESENTATION_INVALID")));
+    }
+
+    @Test
+    void Createの従来アイコンを対象範囲だけで書き出す() throws Exception {
+        var input = fixture("create");
+        input.put("fabric.mod.json", u("""
+                {"schemaVersion":1,"id":"create","version":"6.0.8.1","depends":{"minecraft":"1.20.1"}}
+                """));
+        input.put("assets/create/models/item/andesite_alloy.json", u("""
+                {"parent":"minecraft:item/generated","textures":{"layer0":"create:item/andesite_alloy"}}
+                """));
+        input.put("assets/create/textures/item/andesite_alloy.png", png(0x336699, 255));
+
+        var preview = CreatePreview.read(jar("create.jar", input));
+        assertEquals("MINECRAFT_VERSION_MISMATCH", preview.report().modeARuntime());
+        var result = preview.compile();
+        assertTrue(result.ok(), () -> result.diagnostics().toString());
+        assertEquals(List.of("create:andesite_alloy"), result.mapping().entries().stream().map(PackCompiler.Entry::java).toList());
+        var rp = unzip(result.outputs().get(PackCompiler.PACK_FILE));
+        assertTrue(text(rp, "manifest.json").contains("Create の静的素材"));
+        assertFalse(text(rp, "manifest.json").contains("Java 26.3"));
+        assertArrayEquals(result.outputs().get(PackCompiler.ADDON_FILE), preview.compile().outputs().get(PackCompiler.ADDON_FILE));
+
+        input.put("fabric.mod.json", u("""
+                {"schemaVersion":1,"id":"create","version":"6.0.8.1","depends":{"minecraft":20}}
+                """));
+        var invalid = jar("bad-create.jar", input);
+        assertThrows(IllegalArgumentException.class, () -> CreatePreview.read(invalid));
     }
 
     @Test

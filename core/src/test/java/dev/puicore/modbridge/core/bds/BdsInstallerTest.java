@@ -218,13 +218,17 @@ class BdsInstallerTest {
     @Test
     @EnabledOnOs(OS.LINUX)
     void LOCKを作らないBDS実行中は対象の配置と復旧を拒否する() throws Exception {
-        Path binary = Files.copy(Path.of("/bin/sleep"), bds.resolve("bedrock_server"));
+        Path binary = Files.copy(Path.of("/bin/sh"), bds.resolve("bedrock_server"));
         assertTrue(binary.toFile().setExecutable(true));
         Files.delete(world.resolve("db/LOCK"));
         String backup = BdsInstaller.apply(bds, packs, null, true);
         var before = snapshot();
-        Process running = new ProcessBuilder(binary.toString(), "30").directory(bds.toFile()).start();
+        Process running = new ProcessBuilder(binary.toString(), "-c", "printf 'ready\\n'; read value")
+                .directory(bds.toFile()).start();
         try {
+            assertEquals("ready", running.inputReader().readLine(), "子プロセスの exec 完了を待つ");
+            Path comm = Path.of("/proc", Long.toString(running.pid()), "comm");
+            assertEquals("bedrock_server", Files.readString(comm).strip());
             var apply = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
             assertTrue(apply.getMessage().contains("対象の BDS プロセスが動いている"), apply.getMessage());
             var restore = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, backup, true));

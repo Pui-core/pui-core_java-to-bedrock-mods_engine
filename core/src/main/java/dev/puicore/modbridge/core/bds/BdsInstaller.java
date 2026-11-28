@@ -17,11 +17,13 @@ import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -29,7 +31,6 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,7 +139,7 @@ public final class BdsInstaller {
         List<String> problems = new ArrayList<>();
         List<Action> actions = new ArrayList<>();
         Path root = bds.toAbsolutePath().normalize();
-        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+        if (!isPlainDirectory(root)) {
             return new PreparedPlan(new Plan(world, actions, List.of("BDS の実フォルダーを指定する（リンクは使えない）"),
                     null, null, null, null), null);
         }
@@ -338,7 +339,7 @@ public final class BdsInstaller {
         try (Stream<Path> dirs = Files.list(folder)) {
             for (var candidates = dirs.iterator(); candidates.hasNext();) {
                 Path candidate = candidates.next();
-                if (Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS) && !Files.isSameFile(candidate, managed)
+                if (isPlainDirectory(candidate) && !Files.isSameFile(candidate, managed)
                         && reference.sameAs(installedReference(candidate)) && samePackFiles(managed, candidate)) {
                     return true;
                 }
@@ -360,7 +361,7 @@ public final class BdsInstaller {
             for (Path relative : originalPaths) {
                 Path from = source.resolve(relative);
                 Path to = candidate.resolve(relative);
-                if (Files.isDirectory(from, LinkOption.NOFOLLOW_LINKS) && Files.isDirectory(to, LinkOption.NOFOLLOW_LINKS)) {
+                if (isPlainDirectory(from) && isPlainDirectory(to)) {
                     continue;
                 }
                 if (!Files.isRegularFile(from, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(to, LinkOption.NOFOLLOW_LINKS)
@@ -434,7 +435,7 @@ public final class BdsInstaller {
             } catch (NoSuchFileException missing) {
                 return;
             }
-            if (!attributes.isDirectory() && !attributes.isRegularFile()) {
+            if (isLinkOrSpecial(attributes)) {
                 throw new IOException(root.relativize(path) + " にリンクか特殊ファイルがある");
             }
             if (!attributes.isDirectory() && !path.equals(entry)) {
@@ -443,16 +444,30 @@ public final class BdsInstaller {
         }
     }
 
+    private static boolean isLinkOrSpecial(BasicFileAttributes attributes) {
+        // Windows の JDK 25 では、ジャンクションが isDirectory と isOther の両方に該当する。
+        return attributes.isSymbolicLink() || attributes.isOther();
+    }
+
+    private static boolean isPlainDirectory(Path path) {
+        try {
+            var attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            return attributes.isDirectory() && !isLinkOrSpecial(attributes);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     private static List<Path> otherWorlds(Path target) throws IOException {
         Path worldsDir = target.getParent();
         if (Files.notExists(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
             return List.of();
         }
-        if (!Files.isDirectory(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
+        if (!isPlainDirectory(worldsDir)) {
             throw new LockedException();
         }
         try (Stream<Path> paths = Files.list(worldsDir)) {
-            return paths.filter(path -> !path.equals(target) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList();
+            return paths.filter(path -> !path.equals(target) && isPlainDirectory(path)).toList();
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
@@ -471,7 +486,7 @@ public final class BdsInstaller {
         }
 
         static MutationLock acquire(Path root) throws IOException {
-            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            if (!isPlainDirectory(root)) {
                 throw new IOException("BDS の実フォルダーを指定する（リンクは使えない）");
             }
             Path canonical = root.toRealPath();
@@ -576,7 +591,7 @@ public final class BdsInstaller {
             if (Files.notExists(db, LinkOption.NOFOLLOW_LINKS)) {
                 return;
             }
-            if (!Files.isDirectory(db, LinkOption.NOFOLLOW_LINKS)) {
+            if (!isPlainDirectory(db)) {
                 throw new LockedException();
             }
             Path lockFile = db.resolve("LOCK");
@@ -686,7 +701,7 @@ public final class BdsInstaller {
      * 値は真偽値でなければならない（書き換えられた backup.json でほかのフォルダーを消さないため）。
      */
     private static Backup readBackup(Path root, String id) throws IOException {
-        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+        if (!isPlainDirectory(root)) {
             throw new IOException("BDS の実フォルダーを指定する（リンクは使えない）");
         }
         Path dir = root.resolve(BACKUP_DIR).resolve(id);
@@ -1057,25 +1072,33 @@ public final class BdsInstaller {
 
     /** @param skipDbLock ワールドの DB のロックファイル（db/LOCK）を飛ばす。ロック中で読めない場合があり、LevelDB が作り直すため */
     private static void copyTree(Path src, Path dst, boolean skipDbLock) throws IOException {
-        try (Stream<Path> s = Files.walk(src)) {
-            for (Path p : s.toList()) {
-                BasicFileAttributes attributes = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-                if (!attributes.isDirectory() && !attributes.isRegularFile()) {
+        Files.walkFileTree(src, new SimpleFileVisitor<Path>() {
+            private void checkType(Path p, BasicFileAttributes attributes) throws IOException {
+                if (isLinkOrSpecial(attributes)) {
                     throw new IOException("リンクか特殊ファイルはコピーしない: " + src.relativize(p));
                 }
+            }
+
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) throws IOException {
+                checkType(dir, attributes);
+                Files.createDirectories(dst.resolve(src.relativize(dir)));
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path p, BasicFileAttributes attributes) throws IOException {
+                checkType(p, attributes);
                 if (skipDbLock && p.getFileName().toString().equals("LOCK") && p.getParent() != null
                         && p.getParent().getFileName() != null && p.getParent().getFileName().toString().equals("db")) {
-                    continue;
+                    return FileVisitResult.CONTINUE;
                 }
-                Path t = dst.resolve(src.relativize(p).toString());
-                if (attributes.isDirectory()) {
-                    Files.createDirectories(t);
-                } else {
-                    Files.createDirectories(t.getParent());
-                    Files.copy(p, t, StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS);
-                }
+                Path t = dst.resolve(src.relativize(p));
+                Files.createDirectories(t.getParent());
+                Files.copy(p, t, StandardCopyOption.REPLACE_EXISTING, LinkOption.NOFOLLOW_LINKS);
+                return FileVisitResult.CONTINUE;
             }
-        }
+        });
     }
 
     private static void move(Path from, Path to) throws IOException {
@@ -1090,14 +1113,34 @@ public final class BdsInstaller {
         if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
-        if (Files.isSymbolicLink(p)) {
-            Files.delete(p); // リンク先は消さない
-            return;
-        }
-        try (Stream<Path> s = Files.walk(p)) {
-            for (Path x : s.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(x);
+        List<Path> deletionOrder = new ArrayList<>();
+        Files.walkFileTree(p, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) {
+                if (isLinkOrSpecial(attributes)) {
+                    deletionOrder.add(dir);
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
             }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                deletionOrder.add(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException problem) throws IOException {
+                if (problem != null) {
+                    throw problem;
+                }
+                deletionOrder.add(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        for (Path entry : deletionOrder) {
+            Files.deleteIfExists(entry);
         }
     }
 }

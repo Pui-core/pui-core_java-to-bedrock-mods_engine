@@ -344,6 +344,19 @@ class BdsInstallerTest {
         assertEquals("keep", Files.readString(external.resolve("keep.txt")));
     }
 
+    @Test
+    void rollback後に古いワールドを片付けるときリンク先を消さない() throws Exception {
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Path external = Files.createDirectories(dir.resolve("other-save-data"));
+        Path marker = Files.writeString(external.resolve("keep.txt"), "keep");
+        Path linked = world.resolve("external-data");
+        linkDirectory(linked, external);
+
+        BdsInstaller.rollback(bds, id, true);
+        assertFalse(Files.exists(linked));
+        assertEquals("keep", Files.readString(marker));
+    }
+
     private static void linkDirectory(Path link, Path target) throws Exception {
         if (OS.WINDOWS.isCurrentOs()) {
             Process junction = new ProcessBuilder("cmd.exe", "/d", "/c", "mklink", "/J", link.toString(), target.toString())

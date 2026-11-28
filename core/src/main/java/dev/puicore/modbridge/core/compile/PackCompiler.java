@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -51,7 +52,7 @@ import java.util.zip.ZipOutputStream;
  *   <li>入力の取り違え防止: JAR を開き直したら、IR に記録した SHA-256 と照合する</li>
  * </ul>
  *
- * <p>作るのはリソースパックだけ。Mode B のビヘイビアパック（アイテム・ブロックの定義）は #6 で扱う。
+ * <p>Mode B 用のビヘイビアパックも生成し、Java の実行ロジックや未対応の素材は対応表に記録する。
  */
 public final class PackCompiler {
     public static final String MAPPING_SCHEMA = "modbridge.mapping";
@@ -63,8 +64,9 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/14";
+    static final String COMPILER_VERSION = "pack-compiler/15";
     static final long MAX_PACK_BYTES = 256L << 20;
+    private static final long MAX_SOUND_BYTES = 64L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
     static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 80);
@@ -237,6 +239,7 @@ public final class PackCompiler {
         Map<String, byte[]> presentationResources = new TreeMap<>();
         Map<String, byte[]> presentationBehaviors = new TreeMap<>();
         Map<String, JsonObject> soundDefinitions = new TreeMap<>();
+        Map<String, byte[]> soundFiles = new TreeMap<>();
         List<Entry> presentationEntries = new ArrayList<>();
         List<BehaviorPack.Entry> presentationBehaviorEntries = new ArrayList<>();
 
@@ -267,13 +270,15 @@ public final class PackCompiler {
                 diag(Severity.ERROR, "ENTITY_PRESENTATION_INVALID", mod, failure.getMessage());
                 return fail();
             }
-            needed.addAll(sounds.assets());
+            Set<String> optional = sounds.assets();
             needed.addAll(presentation.assets());
-            SafeArchive jar = needed.isEmpty() ? meta : open(path, file, sha.get(file), needed::contains);
+            SafeArchive jar = needed.isEmpty() && optional.isEmpty() ? meta
+                    : open(path, file, sha.get(file), needed::contains, optional::contains);
             if (jar == null) {
                 return fail();
             }
-            Set<String> consumed = BedrockSounds.add(sounds, jar, presentationResources, soundDefinitions, presentationEntries, diags);
+            Set<String> consumed = BedrockSounds.add(sounds, jar, soundFiles, soundDefinitions, presentationEntries,
+                    diags, MAX_SOUND_BYTES - sizeOf(soundFiles));
             try {
                 BedrockEntityPresentation.add(presentation, jar, presentationResources, presentationBehaviors,
                         presentationEntries, presentationBehaviorEntries);
@@ -337,12 +342,6 @@ public final class PackCompiler {
 
         // ---- パックの中身 ----
         Map<String, byte[]> files = new TreeMap<>(presentationResources);
-        if (!soundDefinitions.isEmpty()) {
-            Map<String, Object> soundDocument = new TreeMap<>();
-            soundDocument.put("format_version", "1.14.0");
-            soundDocument.put("sound_definitions", soundDefinitions);
-            files.put("sounds/sound_definitions.json", json(soundDocument));
-        }
         textures.forEach((id, t) -> files.put(t.path() + ".png", textureBytes.get(id)));
         files.put("textures/item_texture.json", json(atlas("atlas.items", itemAtlas, textures, false)));
         files.put("textures/terrain_texture.json", json(atlas("atlas.terrain", terrainAtlas, textures, true)));
@@ -354,6 +353,19 @@ public final class PackCompiler {
                 kv.forEach((k, v) -> b.append(k).append('=').append(v).append('\n'));
                 files.put("texts/" + code + ".lang", b.toString().getBytes(StandardCharsets.UTF_8));
             });
+        }
+        if (!soundDefinitions.isEmpty()) {
+            var soundDocument = new TreeMap<String, Object>();
+            soundDocument.put("format_version", "1.14.0");
+            soundDocument.put("sound_definitions", soundDefinitions);
+            byte[] definitions = json(soundDocument);
+            if (sizeOf(files) + sizeOf(soundFiles) + definitions.length <= MAX_PACK_BYTES - (4L << 20)) {
+                files.putAll(soundFiles);
+                files.put("sounds/sound_definitions.json", definitions);
+            } else {
+                presentationEntries.removeIf(entry -> entry.kind().equals("SOUND"));
+                diag(Severity.WARN, "SOUND_UNSUPPORTED", "-", "リソースパックの容量上限によりサウンドを収録しなかった");
+            }
         }
         String contentSha = contentHash(files);
         UUID header = UUID.nameUUIDFromBytes(("modbridge:rp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
@@ -448,10 +460,14 @@ public final class PackCompiler {
     }
 
     /** JAR を開き、IR に記録した SHA-256 と照合する。失敗なら ERROR を記録して null。 */
-    private SafeArchive open(Path path, String file, String expectedSha, java.util.function.Predicate<String> alsoRead) {
+    private SafeArchive open(Path path, String file, String expectedSha, Predicate<String> alsoRead) {
+        return open(path, file, expectedSha, alsoRead, name -> false);
+    }
+
+    private SafeArchive open(Path path, String file, String expectedSha, Predicate<String> alsoRead, Predicate<String> optionalRead) {
         SafeArchive jar;
         try {
-            jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, alsoRead);
+            jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, alsoRead, optionalRead);
         } catch (SafeArchive.ArchiveException e) {
             diag(Severity.ERROR, e.code(), file, e.getMessage());
             return null;
@@ -723,7 +739,8 @@ public final class PackCompiler {
     private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version, String moduleType, String name, boolean hasScript) {
         Map<String, Object> h = new LinkedHashMap<>();
         h.put("name", name);
-        h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（Java " + TargetVersions.get("minecraft") + " の MOD から）");
+        String source = staticPreview ? "Create の静的素材" : "Java " + TargetVersions.get("minecraft") + " の MOD";
+        h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（" + source + " から）");
         h.put("uuid", header.toString());
         h.put("version", version);
         h.put("min_engine_version", hasScript ? BedrockMachineMenus.MIN_ENGINE_VERSION : MIN_ENGINE_VERSION);
@@ -897,6 +914,10 @@ public final class PackCompiler {
     }
 
     /** パスと内容のハッシュから、パック全体の内容のハッシュを作る（manifest は含めない）。 */
+    private static long sizeOf(Map<String, byte[]> files) {
+        return files.values().stream().mapToLong(bytes -> bytes.length).sum();
+    }
+
     static String contentHash(Map<String, byte[]> files) {
         MessageDigest md = sha256();
         files.forEach((path, b) -> {

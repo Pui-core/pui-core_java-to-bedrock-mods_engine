@@ -45,7 +45,13 @@ public final class CreatePreview {
 
     public static CreatePreview read(Path path) throws SafeArchive.ArchiveException {
         var archive = SafeArchive.open(path);
-        var mod = JarScanner.scan(archive).mods().stream().filter(candidate -> candidate.id().equals("create")).findFirst()
+        var scan = JarScanner.scan(archive);
+        var error = scan.diagnostics().stream().filter(diagnostic -> diagnostic.severity() == BridgeIr.Severity.ERROR).findFirst();
+        if (error.isPresent()) {
+            var diagnostic = error.get();
+            throw new IllegalArgumentException(diagnostic.code() + ": " + diagnostic.message());
+        }
+        var mod = scan.mods().stream().filter(candidate -> candidate.id().equals("create")).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Create の MOD メタデータがある JAR を指定する"));
         return new CreatePreview(path, archive, mod);
     }
@@ -53,9 +59,10 @@ public final class CreatePreview {
     public Report report() {
         String target = TargetVersions.get("minecraft");
         String minecraft = mod.depends().getOrDefault("minecraft", "UNKNOWN");
+        List<String> assets = STATIC.stream().map(Sample::asset).filter(archive::has).toList();
         List<Stage> stages = List.of(
-                new Stage("static_materials", STATIC.stream().map(Sample::asset).filter(archive::has).toList(),
-                        "RESOURCE_PREVIEW_ONLY", "STATIC_ADDON_PREVIEW"),
+                new Stage("static_materials", assets, "GEYSER_MAPPING_UNTESTED",
+                        assets.isEmpty() ? "NO_STATIC_ASSETS_FOUND" : "STATIC_ADDON_PREVIEW"),
                 stage("shafts_and_gears", "KINETIC_SYNC_REQUIRED", "KINETIC_LOGIC_NOT_IMPLEMENTED", "shaft", "cogwheel", "large_cogwheel"),
                 stage("machines", "SERVER_ADAPTER_REQUIRED", "CREATE_PROCESSING_NOT_IMPLEMENTED", "mechanical_press", "mechanical_mixer", "depot"),
                 stage("conveyors", "TRACKING_AND_TRANSPORT_REQUIRED", "CREATE_TRANSPORT_NOT_IMPLEMENTED", "belt"),

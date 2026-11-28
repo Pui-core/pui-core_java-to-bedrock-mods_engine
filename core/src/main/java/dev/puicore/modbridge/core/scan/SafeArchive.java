@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -136,7 +137,13 @@ public final class SafeArchive {
      * テキスト系に加えて、{@code alsoRead} が真を返すエントリー（テクスチャの PNG など）の内容も読む。
      * 読んだ量は同じ上限（個別・合計・圧縮率）で数える。内容は {@link #text(String)} で取り出す。
      */
-    public static SafeArchive open(Path path, Limits limits, java.util.function.Predicate<String> alsoRead) throws ArchiveException {
+    public static SafeArchive open(Path path, Limits limits, Predicate<String> alsoRead) throws ArchiveException {
+        return open(path, limits, alsoRead, name -> false);
+    }
+
+    /** 任意素材は、必須素材を読み終えてから残りの予算で読む。読めなければ text() が null を返す。 */
+    public static SafeArchive open(Path path, Limits limits, Predicate<String> alsoRead, Predicate<String> optionalRead)
+            throws ArchiveException {
         long size;
         String sha;
         try {
@@ -152,6 +159,7 @@ public final class SafeArchive {
         Set<String> names = new TreeSet<>();
         Map<String, byte[]> texts = new TreeMap<>();
         Map<String, NestedJar> nested = new TreeMap<>();
+        Map<String, ZipEntry> optional = new TreeMap<>();
         long totalRead = 0;
         try (ZipFile zip = new ZipFile(path.toFile())) {
             if (zip.size() > limits.maxEntries()) {
@@ -185,6 +193,9 @@ public final class SafeArchive {
                     continue;
                 }
                 if (!isText(name) && !alsoRead.test(name)) {
+                    if (optionalRead.test(name)) {
+                        optional.put(name, e);
+                    }
                     continue;
                 }
                 byte[] data;
@@ -197,6 +208,7 @@ public final class SafeArchive {
                 }
                 texts.put(name, data);
             }
+            readOptional(zip, optional.values(), texts, limits, limits.maxTotalReadBytes() - totalRead);
         } catch (ArchiveException e) {
             throw e;
         } catch (IOException | IllegalArgumentException e) {
@@ -205,6 +217,30 @@ public final class SafeArchive {
         }
         return new SafeArchive(path.getFileName().toString(), sha, size,
                 Collections.unmodifiableSet(names), Collections.unmodifiableMap(texts), Collections.unmodifiableMap(nested));
+    }
+
+    private static void readOptional(ZipFile zip, Iterable<ZipEntry> optional, Map<String, byte[]> texts,
+            Limits limits, long remaining) {
+        long budget = Math.min(remaining, 32L << 20);
+        for (ZipEntry entry : optional) {
+            long size = entry.getSize();
+            long cost = Math.max(8_192, size);
+            if (size <= 0 || size > limits.maxEntryBytes() || cost > budget) {
+                continue;
+            }
+            budget -= cost;
+            // 宣言値の偽装や解凍の途中で失敗した試行も予算から差し引く。
+            var entryLimits = new Limits(limits.maxEntries(), limits.maxJarBytes(), size,
+                    limits.maxTotalReadBytes(), limits.maxRatio());
+            try (InputStream input = zip.getInputStream(entry)) {
+                byte[] data = readBounded(input, entry.getName(), Math.max(entry.getCompressedSize(), 1), entryLimits);
+                if (data.length == size) {
+                    texts.put(entry.getName(), data);
+                }
+            } catch (IOException | ArchiveException ignored) {
+                // 使えない任意素材は、使用側で該当機能だけを診断する。
+            }
+        }
     }
 
     /**

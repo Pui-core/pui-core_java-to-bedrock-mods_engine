@@ -322,22 +322,50 @@ class BdsInstallerTest {
     }
 
     @Test
-    void 別のワールドに同じ版のパックが残るなら共有パックを更新できる() throws Exception {
+    void 別のワールドが使える完全なコピーが残る場合だけ共有パックを更新できる() throws Exception {
         Path archive = Files.createDirectories(bds.resolve("worlds/Archive"));
         BdsInstaller.apply(bds, packs, null, true);
         BdsInstaller.apply(bds, packs, "Archive", true);
         Path localBehavior = Files.createDirectories(archive.resolve("behavior_packs/local-copy"));
         Path sharedResource = Files.createDirectories(bds.resolve("resource_packs/other-copy"));
-        Files.copy(bds.resolve("behavior_packs/modbridge-bp/manifest.json"), localBehavior.resolve("manifest.json"));
-        Files.copy(bds.resolve("resource_packs/modbridge-rp/manifest.json"), sharedResource.resolve("manifest.json"));
+        Path behaviorPack = bds.resolve("behavior_packs/modbridge-bp");
+        Path resourcePack = bds.resolve("resource_packs/modbridge-rp");
+        Files.copy(behaviorPack.resolve("manifest.json"), localBehavior.resolve("manifest.json"));
+        Files.copy(resourcePack.resolve("manifest.json"), sharedResource.resolve("manifest.json"));
         String behavior = Files.readString(archive.resolve("world_behavior_packs.json"));
         String resource = Files.readString(archive.resolve("world_resource_packs.json"));
 
         compilePacks(packs, "next_ingot");
+        Map<String, String> before = snapshot();
+        assertFalse(BdsInstaller.plan(bds, packs, null).ok());
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
+        assertEquals(before, snapshot());
+
+        copyPack(behaviorPack, localBehavior);
+        assertFalse(BdsInstaller.plan(bds, packs, null).ok());
+        copyPack(resourcePack, sharedResource);
+        Path contents = localBehavior.resolve("items/b/test_ingot.json");
+        String original = Files.readString(contents);
+        Files.writeString(contents, "{}");
+        assertFalse(BdsInstaller.plan(bds, packs, null).ok());
+        Files.writeString(contents, original);
         assertTrue(BdsInstaller.plan(bds, packs, null).ok());
         BdsInstaller.apply(bds, packs, null, true);
         assertEquals(behavior, Files.readString(archive.resolve("world_behavior_packs.json")));
         assertEquals(resource, Files.readString(archive.resolve("world_resource_packs.json")));
+    }
+
+    private static void copyPack(Path source, Path destination) throws IOException {
+        try (Stream<Path> files = Files.walk(source)) {
+            for (Path file : files.toList()) {
+                Path target = destination.resolve(source.relativize(file));
+                if (Files.isDirectory(file)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
     }
 
     @Test

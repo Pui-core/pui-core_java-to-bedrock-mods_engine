@@ -98,6 +98,10 @@ public final class BdsInstaller {
             return entry.get(uuidKey) instanceof JsonPrimitive id && id.isString()
                     && uuid.equalsIgnoreCase(id.getAsString()) && matchesVersion(entry.get("version"), version);
         }
+
+        boolean sameAs(PackReference other) {
+            return other != null && uuid.equalsIgnoreCase(other.uuid()) && version.equals(other.version());
+        }
     }
 
     private record SharedPack(String folder, String worldList) {
@@ -305,7 +309,7 @@ public final class BdsInstaller {
     private static void checkSharedPack(Path root, Path world, SharedPack pack, PackReference next) throws IOException {
         Path managed = root.resolve(pack.folder());
         PackReference current = installedReference(managed);
-        if (current == null || sameReference(current, next)) {
+        if (current == null || current.sameAs(next)) {
             return;
         }
         List<Path> peers = otherWorlds(world);
@@ -319,25 +323,52 @@ public final class BdsInstaller {
             }
             boolean used = entries.asList().stream().anyMatch(entry ->
                     entry instanceof JsonObject object && current.matches(object, "pack_id"));
-            if (used && !containsPack(managed.getParent(), managed, current)
-                    && !containsPack(peer.resolve(managed.getParent().getFileName()), null, current)) {
+            if (used && !containsCopy(managed.getParent(), managed, current)
+                    && !containsCopy(peer.resolve(managed.getParent().getFileName()), managed, current)) {
                 throw new IOException("worlds/" + peer.getFileName() + " が共有パック " + pack.folder()
                         + " の版 " + current.version() + " を使っている");
             }
         }
     }
 
-    private static boolean sameReference(PackReference first, PackReference second) {
-        return second != null && first.uuid().equalsIgnoreCase(second.uuid()) && first.version().equals(second.version());
-    }
-
-    private static boolean containsPack(Path folder, Path excluded, PackReference reference) throws IOException {
+    private static boolean containsCopy(Path folder, Path managed, PackReference reference) throws IOException {
         if (Files.notExists(folder, LinkOption.NOFOLLOW_LINKS)) {
             return false;
         }
         try (Stream<Path> dirs = Files.list(folder)) {
-            return dirs.filter(path -> !path.equals(excluded) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
-                    .anyMatch(path -> sameReference(reference, installedReference(path)));
+            for (var candidates = dirs.iterator(); candidates.hasNext();) {
+                Path candidate = candidates.next();
+                if (Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS) && !Files.isSameFile(candidate, managed)
+                        && reference.sameAs(installedReference(candidate)) && samePackFiles(managed, candidate)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static boolean samePackFiles(Path source, Path candidate) throws IOException {
+        // 同じ UUID・版の manifest だけが置かれた不完全なコピーは代替にならない。
+        try (Stream<Path> original = Files.walk(source); Stream<Path> copy = Files.walk(candidate)) {
+            List<Path> originalPaths = original.map(source::relativize).sorted().toList();
+            List<Path> copyPaths = copy.map(candidate::relativize).sorted().toList();
+            if (!originalPaths.equals(copyPaths)) {
+                return false;
+            }
+            for (Path relative : originalPaths) {
+                Path from = source.resolve(relative);
+                Path to = candidate.resolve(relative);
+                if (Files.isDirectory(from, LinkOption.NOFOLLOW_LINKS) && Files.isDirectory(to, LinkOption.NOFOLLOW_LINKS)) {
+                    continue;
+                }
+                if (!Files.isRegularFile(from, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(to, LinkOption.NOFOLLOW_LINKS)
+                        || Files.mismatch(from, to) != -1) {
+                    return false;
+                }
+            }
+            return true;
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }

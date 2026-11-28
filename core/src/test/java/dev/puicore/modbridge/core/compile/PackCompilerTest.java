@@ -552,6 +552,30 @@ class PackCompilerTest {
     }
 
     @Test
+    void 左右非対称の定形レシピは反転を許可する書式で生成する() throws IOException {
+        Map<String, byte[]> m = fixture("mirror");
+        m.put("data/mirror/recipe/asymmetric.json", u("""
+                {"type":"minecraft:crafting_shaped","pattern":["AB"," A"],
+                 "key":{"A":"mirror:test_ingot","B":"minecraft:redstone"},
+                 "result":{"id":"mirror:test_block"}}
+                """));
+        PackCompiler.Result r = compile(List.of(jar("mirror.jar", m)));
+        assertTrue(r.ok(), r.diagnostics().toString());
+        Map<String, byte[]> bp = unzip(r.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        var recipe = JsonParser.parseString(text(bp, "recipes/mirror/asymmetric.json")).getAsJsonObject();
+        assertEquals("1.20.80", recipe.get("format_version").getAsString());
+        var shaped = recipe.getAsJsonObject("minecraft:recipe_shaped");
+        assertTrue(shaped.get("assume_symmetry").getAsBoolean());
+        assertEquals(JsonParser.parseString("[\"AB\",\" A\"]"), shaped.get("pattern"));
+        assertEquals(JsonParser.parseString("[{\"item\":\"minecraft:redstone\"},{\"item\":\"mirror:test_ingot\"}]"),
+                shaped.get("unlock"));
+
+        var symmetric = JsonParser.parseString(text(bp, "recipes/mirror/test_block.json")).getAsJsonObject();
+        assertEquals("1.20.10", symmetric.get("format_version").getAsString());
+        assertFalse(symmetric.getAsJsonObject("minecraft:recipe_shaped").has("assume_symmetry"));
+    }
+
+    @Test
     void patternとkeyが対応しない定形レシピは外す() throws IOException {
         Map<String, byte[]> m = fixture("pk");
         m.put("data/pk/recipe/undefined_char.json", u("{\"type\":\"minecraft:crafting_shaped\",\"pattern\":[\"XX\",\"X \"],"

@@ -61,7 +61,28 @@ final class ModelResolver {
         if (m.has("tints")) {
             return Resolved.fail("色付け（tints）は非対応");
         }
-        Chain c = chain(str(m, "model"));
+        return itemModel(str(m, "model"));
+    }
+
+    /** Create の静的プレビューでは従来の単層アイコンも扱う。 */
+    Resolved previewItem(String id) {
+        if (jar.has(assetPath(id, "items", ".json"))) {
+            return item(id);
+        }
+        String model = id.replace(":", ":item/");
+        JsonObject legacy = json(assetPath(model, "models", ".json"));
+        String parent = legacy == null ? null : normalize(str(legacy, "parent"));
+        if (!"minecraft:item/generated".equals(parent) && !"minecraft:item/handheld".equals(parent)) {
+            return Resolved.fail("従来モデルは generated／handheld の直接参照だけに対応");
+        }
+        if (legacy.has("elements") || legacy.has("overrides") || legacy.has("loader")) {
+            return Resolved.fail("従来モデルの独自形状・条件・ローダーはプレビューしない");
+        }
+        return itemModel(model);
+    }
+
+    private Resolved itemModel(String model) {
+        Chain c = chain(model);
         if (c.error != null) {
             return Resolved.fail(c.error);
         }

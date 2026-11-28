@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -51,7 +52,7 @@ import java.util.zip.ZipOutputStream;
  *   <li>入力の取り違え防止: JAR を開き直したら、IR に記録した SHA-256 と照合する</li>
  * </ul>
  *
- * <p>作るのはリソースパックだけ。Mode B のビヘイビアパック（アイテム・ブロックの定義）は #6 で扱う。
+ * <p>Mode B 用のビヘイビアパックも生成し、Java の実行ロジックや未対応の素材は対応表に記録する。
  */
 public final class PackCompiler {
     public static final String MAPPING_SCHEMA = "modbridge.mapping";
@@ -63,8 +64,9 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/13";
+    static final String COMPILER_VERSION = "pack-compiler/15";
     static final long MAX_PACK_BYTES = 256L << 20;
+    private static final long MAX_SOUND_BYTES = 64L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
     static final List<Integer> MIN_ENGINE_VERSION = List.of(1, 21, 80);
@@ -127,19 +129,25 @@ public final class PackCompiler {
     private final BridgeIr ir;
     private final Map<String, Path> jars;
     private final Settings settings;
+    private final boolean staticPreview;
     private final List<Diagnostic> diags = new ArrayList<>();
 
-    private PackCompiler(BridgeIr ir, Map<String, Path> jars, Settings settings) {
+    private PackCompiler(BridgeIr ir, Map<String, Path> jars, Settings settings, boolean staticPreview) {
         this.ir = ir;
         this.jars = jars;
         this.settings = settings;
+        this.staticPreview = staticPreview;
     }
 
     /**
      * @param jars 入力 JAR のファイル名 → パス（IR の {@code inputs[].name} と同じ名前）
      */
     public static Result compile(BridgeIr ir, Map<String, Path> jars, Settings settings) {
-        return new PackCompiler(ir, jars, settings).run();
+        return new PackCompiler(ir, jars, settings, false).run();
+    }
+
+    static Result compileStaticPreview(BridgeIr ir, Map<String, Path> jars, Settings settings) {
+        return new PackCompiler(ir, jars, settings, true).run();
     }
 
     private void diag(Severity sev, String code, String subject, String message) {
@@ -228,6 +236,13 @@ public final class PackCompiler {
         Set<String> terrainAtlas = new TreeSet<>();
         Map<String, Map<String, String>> lang = new TreeMap<>(); // Bedrock の言語 → キー → 値
 
+        Map<String, byte[]> presentationResources = new TreeMap<>();
+        Map<String, byte[]> presentationBehaviors = new TreeMap<>();
+        Map<String, JsonObject> soundDefinitions = new TreeMap<>();
+        Map<String, byte[]> soundFiles = new TreeMap<>();
+        List<Entry> presentationEntries = new ArrayList<>();
+        List<BehaviorPack.Entry> presentationBehaviorEntries = new ArrayList<>();
+
         Map<String, List<Definition>> byMod = new TreeMap<>();
         // 定義を持たない MOD（データだけの MOD など）も開き、変換しないデータを報告する
         ir.mods().forEach(m -> byMod.computeIfAbsent(m.id(), k -> new ArrayList<>()));
@@ -245,13 +260,38 @@ public final class PackCompiler {
             if (meta == null) {
                 return fail();
             }
+            String mod = modEntry.getKey();
             Set<String> needed = neededPngs(new ModelResolver(meta), modEntry.getValue());
-            unconvertedContent.put(modEntry.getKey(), unconvertedCategories(meta));
-            if (modEntry.getValue().isEmpty()) {
-                continue;
+            BedrockSounds.Plan sounds = staticPreview ? new BedrockSounds.Plan("", List.of(), true) : BedrockSounds.plan(mod, meta, diags);
+            BedrockEntityPresentation.Plan presentation;
+            try {
+                presentation = staticPreview ? new BedrockEntityPresentation.Plan("", List.of()) : BedrockEntityPresentation.plan(mod, meta);
+            } catch (IllegalArgumentException failure) {
+                diag(Severity.ERROR, "ENTITY_PRESENTATION_INVALID", mod, failure.getMessage());
+                return fail();
             }
-            SafeArchive jar = open(path, file, sha.get(file), needed::contains);
+            Set<String> optional = sounds.assets();
+            needed.addAll(presentation.assets());
+            SafeArchive jar = needed.isEmpty() && optional.isEmpty() ? meta
+                    : open(path, file, sha.get(file), needed::contains, optional::contains);
             if (jar == null) {
+                return fail();
+            }
+            Set<String> consumed = BedrockSounds.add(sounds, jar, soundFiles, soundDefinitions, presentationEntries,
+                    diags, MAX_SOUND_BYTES - sizeOf(soundFiles));
+            try {
+                BedrockEntityPresentation.add(presentation, jar, presentationResources, presentationBehaviors,
+                        presentationEntries, presentationBehaviorEntries);
+            } catch (IllegalArgumentException failure) {
+                diag(Severity.ERROR, "ENTITY_PRESENTATION_INVALID", mod, failure.getMessage());
+                return fail();
+            }
+            if (!presentation.entities().isEmpty()) {
+                consumed.add(presentation.source());
+            }
+            unconvertedContent.put(mod, unconvertedCategories(meta, consumed));
+            if (presentationResources.values().stream().mapToLong(bytes -> bytes.length).sum() > MAX_PACK_BYTES) {
+                diag(Severity.ERROR, "PACK_LIMIT_EXCEEDED", mod, "エンティティ・サウンド素材がパックの上限を超えた");
                 return fail();
             }
             ModelResolver resolver = new ModelResolver(jar);
@@ -296,12 +336,12 @@ public final class PackCompiler {
         if (diags.stream().anyMatch(d -> d.severity() == Severity.ERROR)) {
             return fail();
         }
-        if (entries.values().stream().noneMatch(e -> !e.status().equals("SKIPPED"))) {
+        if (presentationEntries.isEmpty() && entries.values().stream().noneMatch(e -> !e.status().equals("SKIPPED"))) {
             diag(Severity.WARN, "NOTHING_COMPILED", "-", "変換できた定義が無い（空のパックを作る）");
         }
 
         // ---- パックの中身 ----
-        Map<String, byte[]> files = new TreeMap<>();
+        Map<String, byte[]> files = new TreeMap<>(presentationResources);
         textures.forEach((id, t) -> files.put(t.path() + ".png", textureBytes.get(id)));
         files.put("textures/item_texture.json", json(atlas("atlas.items", itemAtlas, textures, false)));
         files.put("textures/terrain_texture.json", json(atlas("atlas.terrain", terrainAtlas, textures, true)));
@@ -313,6 +353,19 @@ public final class PackCompiler {
                 kv.forEach((k, v) -> b.append(k).append('=').append(v).append('\n'));
                 files.put("texts/" + code + ".lang", b.toString().getBytes(StandardCharsets.UTF_8));
             });
+        }
+        if (!soundDefinitions.isEmpty()) {
+            var soundDocument = new TreeMap<String, Object>();
+            soundDocument.put("format_version", "1.14.0");
+            soundDocument.put("sound_definitions", soundDefinitions);
+            byte[] definitions = json(soundDocument);
+            if (sizeOf(files) + sizeOf(soundFiles) + definitions.length <= MAX_PACK_BYTES - (4L << 20)) {
+                files.putAll(soundFiles);
+                files.put("sounds/sound_definitions.json", definitions);
+            } else {
+                presentationEntries.removeIf(entry -> entry.kind().equals("SOUND"));
+                diag(Severity.WARN, "SOUND_UNSUPPORTED", "-", "リソースパックの容量上限によりサウンドを収録しなかった");
+            }
         }
         String contentSha = contentHash(files);
         UUID header = UUID.nameUUIDFromBytes(("modbridge:rp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
@@ -349,6 +402,8 @@ public final class PackCompiler {
         }
         Map<String, byte[]> bpFiles = new TreeMap<>(bp.files());
         List<BehaviorPack.Entry> behavior = new ArrayList<>(bp.entries());
+        bpFiles.putAll(presentationBehaviors);
+        behavior.addAll(presentationBehaviorEntries);
         var menus = adapters.menus();
         boolean hasScript = !menus.isEmpty();
         if (hasScript) {
@@ -382,9 +437,11 @@ public final class PackCompiler {
             return fail();
         }
 
+        List<Entry> mappingEntries = new ArrayList<>(entries.values());
+        mappingEntries.addAll(presentationEntries);
         Mapping mapping = new Mapping(MAPPING_SCHEMA, MAPPING_SCHEMA_VERSION, "modbridge " + TargetVersions.get("modbridge"),
                 new PackInfo(settings.packName(), header.toString(), module.toString(), version, MIN_ENGINE_VERSION, contentSha),
-                List.copyOf(entries.values()), List.copyOf(textures.values()),
+                List.copyOf(mappingEntries), List.copyOf(textures.values()),
                 new PackInfo(settings.packName() + " (behavior)", bpHeader.toString(), bpModule.toString(), bpVersion, bpMinEngine, bpSha),
                 List.copyOf(behavior), List.copyOf(notConverted), List.copyOf(diags));
         Map<String, byte[]> outputs = new LinkedHashMap<>();
@@ -403,10 +460,14 @@ public final class PackCompiler {
     }
 
     /** JAR を開き、IR に記録した SHA-256 と照合する。失敗なら ERROR を記録して null。 */
-    private SafeArchive open(Path path, String file, String expectedSha, java.util.function.Predicate<String> alsoRead) {
+    private SafeArchive open(Path path, String file, String expectedSha, Predicate<String> alsoRead) {
+        return open(path, file, expectedSha, alsoRead, name -> false);
+    }
+
+    private SafeArchive open(Path path, String file, String expectedSha, Predicate<String> alsoRead, Predicate<String> optionalRead) {
         SafeArchive jar;
         try {
-            jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, alsoRead);
+            jar = SafeArchive.open(path, SafeArchive.Limits.DEFAULT, alsoRead, optionalRead);
         } catch (SafeArchive.ArchiveException e) {
             diag(Severity.ERROR, e.code(), file, e.getMessage());
             return null;
@@ -419,18 +480,22 @@ public final class PackCompiler {
     }
 
     /** 解決できたモデルが参照する、MOD の名前空間の PNG。 */
-    private static Set<String> neededPngs(ModelResolver resolver, List<Definition> defs) {
+    private Set<String> neededPngs(ModelResolver resolver, List<Definition> defs) {
         Set<String> out = new TreeSet<>();
         for (Definition d : defs) {
             if (d.kind() == Kind.RECIPE) {
                 continue;
             }
-            ModelResolver.Resolved r = d.kind() == Kind.BLOCK ? resolver.block(d.id()) : resolver.item(d.id());
+            ModelResolver.Resolved r = d.kind() == Kind.BLOCK ? resolver.block(d.id()) : resolveItem(resolver, d.id());
             if (r.ok()) {
                 r.textures().values().stream().filter(id -> !id.startsWith("minecraft:")).forEach(id -> out.add(pngName(id)));
             }
         }
         return out;
+    }
+
+    private ModelResolver.Resolved resolveItem(ModelResolver resolver, String id) {
+        return staticPreview ? resolver.previewItem(id) : resolver.item(id);
     }
 
     private static String pngName(String textureId) {
@@ -491,7 +556,7 @@ public final class PackCompiler {
 
     private void compileItem(Definition d, String bid, String subject, ModelResolver resolver, SafeArchive jar,
             Map<String, Entry> entries, Map<String, Texture> textures, Map<String, byte[]> bytes, Set<String> atlas) {
-        ModelResolver.Resolved r = resolver.item(d.id());
+        ModelResolver.Resolved r = resolveItem(resolver, d.id());
         if ("BLOCK_MODEL".equals(r.unsupported())) {
             Entry block = entries.get("block:" + d.id());
             if (block != null && !block.status().equals("SKIPPED")) {
@@ -674,7 +739,8 @@ public final class PackCompiler {
     private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version, String moduleType, String name, boolean hasScript) {
         Map<String, Object> h = new LinkedHashMap<>();
         h.put("name", name);
-        h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（Java " + TargetVersions.get("minecraft") + " の MOD から）");
+        String source = staticPreview ? "Create の静的素材" : "Java " + TargetVersions.get("minecraft") + " の MOD";
+        h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（" + source + " から）");
         h.put("uuid", header.toString());
         h.put("version", version);
         h.put("min_engine_version", hasScript ? BedrockMachineMenus.MIN_ENGINE_VERSION : MIN_ENGINE_VERSION);
@@ -823,9 +889,16 @@ public final class PackCompiler {
      * assets/ はモデル・テクスチャ・blockstate・アイテム定義・言語以外（音・パーティクル・シェーダーなど）。
      */
     static Map<String, Integer> unconvertedCategories(SafeArchive jar) {
+        return unconvertedCategories(jar, Set.of());
+    }
+
+    private static Map<String, Integer> unconvertedCategories(SafeArchive jar, Set<String> consumed) {
         Set<String> convertedAssets = Set.of("models", "textures", "blockstates", "items", "lang");
         Map<String, Integer> out = new TreeMap<>();
         for (String name : jar.names()) {
+            if (consumed.contains(name)) {
+                continue;
+            }
             String[] p = name.split("/", 4);
             if (p.length < 3) {
                 continue;
@@ -841,6 +914,10 @@ public final class PackCompiler {
     }
 
     /** パスと内容のハッシュから、パック全体の内容のハッシュを作る（manifest は含めない）。 */
+    private static long sizeOf(Map<String, byte[]> files) {
+        return files.values().stream().mapToLong(bytes -> bytes.length).sum();
+    }
+
     static String contentHash(Map<String, byte[]> files) {
         MessageDigest md = sha256();
         files.forEach((path, b) -> {

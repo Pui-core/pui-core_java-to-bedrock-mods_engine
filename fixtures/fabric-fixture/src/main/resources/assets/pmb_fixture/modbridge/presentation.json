@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "entities": [
+    {
+      "id": "test_rotor",
+      "texture": "entity/test_rotor",
+      "axis": "y",
+      "rpm": 30,
+      "smoke": true
+    }
+  ]
+}

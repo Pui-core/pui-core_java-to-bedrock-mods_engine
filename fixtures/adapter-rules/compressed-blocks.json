@@ -1,0 +1,28 @@
+{
+  "schema": "modbridge.adapter-rules",
+  "schemaVersion": 1,
+  "adapters": [
+    {
+      "id": "modbridge_examples:compressed_blocks",
+      "targetMod": "compressed_blocks",
+      "versions": ["1.0.3"],
+      "modes": ["A", "B"],
+      "menus": [
+        {
+          "id": "modbridge_examples:compression_bench",
+          "title": "丸石の圧縮",
+          "blocks": ["minecraft:smithing_table"],
+          "maxDistance": 5,
+          "recipes": [
+            {
+              "id": "modbridge_examples:compress_cobblestone",
+              "label": "丸石9個を圧縮",
+              "input": {"item": "minecraft:cobblestone", "count": 9},
+              "output": {"item": "compressed_blocks:compressed_cobblestone", "count": 1}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

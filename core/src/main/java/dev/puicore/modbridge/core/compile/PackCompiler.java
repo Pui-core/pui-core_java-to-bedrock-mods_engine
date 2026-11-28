@@ -7,6 +7,8 @@ import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import dev.puicore.modbridge.core.TargetVersions;
+import dev.puicore.modbridge.core.adapter.AdapterRegistry;
+import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.ir.BridgeIr;
 import dev.puicore.modbridge.core.ir.BridgeIr.Definition;
 import dev.puicore.modbridge.core.ir.BridgeIr.Diagnostic;
@@ -30,6 +32,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -60,7 +63,7 @@ public final class PackCompiler {
     /** 公開する成果物（キャッシュもこの 4 つが揃っているときだけ使う）。 */
     public static final List<String> OUTPUT_FILES = List.of(PACK_FILE, BEHAVIOR_PACK_FILE, ADDON_FILE, MAPPING_FILE);
     /** 生成器の版。出力の形式を変えたら上げる（キャッシュの鍵に入る）。 */
-    static final String COMPILER_VERSION = "pack-compiler/10";
+    static final String COMPILER_VERSION = "pack-compiler/13";
     static final long MAX_PACK_BYTES = 256L << 20;
     static final int MAX_TEXTURES = 16_384;
     /** パックが要求する Bedrock の最低版。1.21.80 以降の書式（ブロックの geometry と material_instances）に合わせる（ADR-0006）。 */
@@ -74,10 +77,15 @@ public final class PackCompiler {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     /** 生成の設定。{@code packId} はヘッダーの UUID を決める（同じ ID なら、内容が変わっても同じパックとして更新される）。 */
-    public record Settings(String packName, String packId) {
+    public record Settings(String packName, String packId, AdapterRules adapterRules) {
         public static final Settings DEFAULT = new Settings("PuiModBridge Resources", "modbridge");
 
+        public Settings(String packName, String packId) {
+            this(packName, packId, AdapterRules.EMPTY);
+        }
+
         public Settings {
+            Objects.requireNonNull(adapterRules);
             if (packName == null || packName.isBlank() || packName.length() > 64) {
                 throw new IllegalArgumentException("パック名は 1〜64 文字にする");
             }
@@ -147,14 +155,47 @@ public final class PackCompiler {
             diag(Severity.ERROR, "IR_HAS_ERRORS", "-", "解析に ERROR 診断があるので、パックを作らない（fail closed）");
             return fail();
         }
+        Map<String, String> versions = new TreeMap<>();
+        ir.mods().forEach(mod -> versions.put(mod.id(), mod.version()));
+        AdapterRegistry adapters;
+        try {
+            adapters = AdapterRegistry.load(List.of(), Set.of(), versions, Mode.B, settings.adapterRules().adapters());
+        } catch (IllegalArgumentException failure) {
+            diag(Severity.ERROR, "ADAPTER_RULES_INVALID", "-", failure.getMessage());
+            return fail();
+        }
+        try (adapters) {
+            return run(adapters);
+        }
+    }
+
+    private Result run(AdapterRegistry adapters) {
         List<Definition> targets = ir.definitions().stream().filter(d -> d.kind() == Kind.ITEM || d.kind() == Kind.BLOCK).toList();
         Map<String, JsonObject> recipes = new TreeMap<>();
         Map<String, Map<String, Integer>> unconvertedContent = new TreeMap<>(); // MOD → 変換しないカテゴリ → ファイル数
         Map<String, String> recipeSkips = new TreeMap<>();
 
+        Map<String, String> identifiers = new TreeMap<>();
+        Map<String, String> recipeIdentifiers = new TreeMap<>();
+        for (Definition d : ir.definitions()) {
+            var mapping = adapters.mapping(d.kind(), d.id());
+            if (mapping.isEmpty()) {
+                continue;
+            }
+            String destination = mapping.get();
+            if (!BedrockIds.identifier(destination).equals(destination) || destination.startsWith("minecraft:")) {
+                diag(Severity.ERROR, "ADAPTER_RULES_INVALID", d.id(), "Bedrock のカスタム識別子を指定する: " + destination);
+                continue;
+            }
+            Map<String, String> selected = d.kind() == Kind.RECIPE ? recipeIdentifiers : identifiers;
+            String previous = selected.putIfAbsent(d.id(), destination);
+            if (previous != null && !previous.equals(destination)) {
+                diag(Severity.ERROR, "ADAPTER_RULES_INVALID", d.id(), "ブロックと同名のアイテムは同じ識別子にする");
+            }
+        }
         // Bedrock 識別子の衝突（アイテムとブロックは同じ名前空間。同じ Java ID のアイテムとブロックはブロックアイテムなので可）
         Map<String, Set<String>> byBedrock = new TreeMap<>();
-        targets.forEach(d -> byBedrock.computeIfAbsent(BedrockIds.identifier(d.id()), k -> new TreeSet<>()).add(d.id()));
+        targets.forEach(d -> byBedrock.computeIfAbsent(bedrockId(identifiers, d.id()), k -> new TreeSet<>()).add(d.id()));
         byBedrock.forEach((bid, javaIds) -> {
             if (javaIds.size() > 1) {
                 diag(Severity.ERROR, "ID_COLLISION", bid, "別々の Java 識別子が同じ Bedrock 識別子になる: " + String.join(", ", javaIds));
@@ -163,7 +204,7 @@ public final class PackCompiler {
         // レシピの識別子の衝突（レシピはアイテム・ブロックとは別の名前空間）
         Map<String, Set<String>> recipeIds = new TreeMap<>();
         ir.definitions().stream().filter(d -> d.kind() == Kind.RECIPE)
-                .forEach(d -> recipeIds.computeIfAbsent(BedrockIds.identifier(d.id()), k -> new TreeSet<>()).add(d.id()));
+                .forEach(d -> recipeIds.computeIfAbsent(bedrockId(recipeIdentifiers, d.id()), k -> new TreeSet<>()).add(d.id()));
         recipeIds.forEach((bid, javaIds) -> {
             if (javaIds.size() > 1) {
                 diag(Severity.ERROR, "ID_COLLISION", bid, "別々の Java のレシピが同じ Bedrock 識別子になる: " + String.join(", ", javaIds));
@@ -218,7 +259,7 @@ public final class PackCompiler {
             defs.sort((a, b) -> a.kind() == b.kind() ? a.id().compareTo(b.id()) : b.kind().compareTo(a.kind())); // BLOCK を先に
             for (Definition d : defs) {
                 String subject = d.kind().name().toLowerCase() + ":" + d.id();
-                String bid = BedrockIds.identifier(d.id());
+                String bid = bedrockId(identifiers, d.id());
                 String skip = skipReason(d, modeB.get(subject));
                 if (d.kind() == Kind.RECIPE) {
                     if (skip != null) {
@@ -277,7 +318,7 @@ public final class PackCompiler {
         UUID header = UUID.nameUUIDFromBytes(("modbridge:rp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         UUID module = UUID.nameUUIDFromBytes(("modbridge:rp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         List<Integer> version = packVersion(contentSha);
-        files.put("manifest.json", json(manifest(header, module, version, "resources", settings.packName())));
+        files.put("manifest.json", json(manifest(header, module, version, "resources", settings.packName(), false)));
 
         byte[] pack = zip(files);
         if (pack.length > MAX_PACK_BYTES) {
@@ -285,7 +326,7 @@ public final class PackCompiler {
             return fail();
         }
         // ---- ビヘイビアパック ----
-        BehaviorPack.Result bp = BehaviorPack.build(entries, recipes, recipeSkips);
+        BehaviorPack.Result bp = BehaviorPack.build(entries, recipes, recipeSkips, recipeIdentifiers);
         diags.addAll(bp.diagnostics());
         List<String> notConverted = new ArrayList<>();
         unconvertedContent.forEach((mod, cats) -> {
@@ -307,16 +348,33 @@ public final class PackCompiler {
             }
         }
         Map<String, byte[]> bpFiles = new TreeMap<>(bp.files());
+        List<BehaviorPack.Entry> behavior = new ArrayList<>(bp.entries());
+        var menus = adapters.menus();
+        boolean hasScript = !menus.isEmpty();
+        if (hasScript) {
+            try {
+                BedrockMachineMenus.addScript(menus, entries, bpFiles, behavior);
+            } catch (IllegalArgumentException failure) {
+                diag(Severity.ERROR, "ADAPTER_RULES_INVALID", "-", failure.getMessage());
+                return fail();
+            }
+        }
+        List<Integer> bpMinEngine = hasScript ? BedrockMachineMenus.MIN_ENGINE_VERSION : MIN_ENGINE_VERSION;
         String bpSha = contentHash(withDependency(bpFiles, header.toString(), version));
         UUID bpHeader = UUID.nameUUIDFromBytes(("modbridge:bp:header:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         UUID bpModule = UUID.nameUUIDFromBytes(("modbridge:bp:module:" + settings.packId()).getBytes(StandardCharsets.UTF_8));
         List<Integer> bpVersion = packVersion(bpSha);
-        Map<String, Object> bpManifest = manifest(bpHeader, bpModule, bpVersion, "data", settings.packName() + " (behavior)");
+        Map<String, Object> bpManifest = manifest(bpHeader, bpModule, bpVersion, "data", settings.packName() + " (behavior)", hasScript);
         // Map.of は要素が 2 つ以上だと反復の順序が実行ごとに変わりうるので、順序を固定する
         Map<String, Object> dependency = new LinkedHashMap<>();
         dependency.put("uuid", header.toString());
         dependency.put("version", version);
-        bpManifest.put("dependencies", List.of(dependency));
+        List<Map<String, Object>> dependencies = new ArrayList<>();
+        dependencies.add(dependency);
+        if (hasScript) {
+            dependencies.addAll(BedrockMachineMenus.dependencies());
+        }
+        bpManifest.put("dependencies", dependencies);
         bpFiles.put("manifest.json", json(bpManifest));
         byte[] bpPack = zip(bpFiles);
         if (bpPack.length > MAX_PACK_BYTES) {
@@ -327,8 +385,8 @@ public final class PackCompiler {
         Mapping mapping = new Mapping(MAPPING_SCHEMA, MAPPING_SCHEMA_VERSION, "modbridge " + TargetVersions.get("modbridge"),
                 new PackInfo(settings.packName(), header.toString(), module.toString(), version, MIN_ENGINE_VERSION, contentSha),
                 List.copyOf(entries.values()), List.copyOf(textures.values()),
-                new PackInfo(settings.packName() + " (behavior)", bpHeader.toString(), bpModule.toString(), bpVersion, MIN_ENGINE_VERSION, bpSha),
-                bp.entries(), List.copyOf(notConverted), List.copyOf(diags));
+                new PackInfo(settings.packName() + " (behavior)", bpHeader.toString(), bpModule.toString(), bpVersion, bpMinEngine, bpSha),
+                List.copyOf(behavior), List.copyOf(notConverted), List.copyOf(diags));
         Map<String, byte[]> outputs = new LinkedHashMap<>();
         outputs.put(PACK_FILE, pack);
         outputs.put(BEHAVIOR_PACK_FILE, bpPack);
@@ -608,13 +666,18 @@ public final class PackCompiler {
         return null;
     }
 
-    private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version, String moduleType, String name) {
+    static String bedrockId(Map<String, String> mappings, String javaId) {
+        String mapped = mappings.get(javaId);
+        return mapped == null ? BedrockIds.identifier(javaId) : mapped;
+    }
+
+    private Map<String, Object> manifest(UUID header, UUID module, List<Integer> version, String moduleType, String name, boolean hasScript) {
         Map<String, Object> h = new LinkedHashMap<>();
         h.put("name", name);
         h.put("description", "modbridge " + TargetVersions.get("modbridge") + " で生成（Java " + TargetVersions.get("minecraft") + " の MOD から）");
         h.put("uuid", header.toString());
         h.put("version", version);
-        h.put("min_engine_version", MIN_ENGINE_VERSION);
+        h.put("min_engine_version", hasScript ? BedrockMachineMenus.MIN_ENGINE_VERSION : MIN_ENGINE_VERSION);
         Map<String, Object> mod = new LinkedHashMap<>();
         mod.put("type", moduleType);
         mod.put("uuid", module.toString());
@@ -622,7 +685,7 @@ public final class PackCompiler {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("format_version", 2);
         root.put("header", h);
-        root.put("modules", List.of(mod));
+        root.put("modules", hasScript ? List.of(mod, BedrockMachineMenus.module(header)) : List.of(mod));
         return root;
     }
 
@@ -672,10 +735,19 @@ public final class PackCompiler {
             return false;
         }
         // BP の依存先は RP のヘッダー
-        if (!(bpManifest.get("dependencies") instanceof com.google.gson.JsonArray deps) || deps.size() != 1
+        boolean hasScript = bpFiles.containsKey(BedrockMachineMenus.ENTRY);
+        if (!(bpManifest.get("dependencies") instanceof com.google.gson.JsonArray deps) || deps.size() != (hasScript ? 3 : 1)
                 || !(deps.get(0) instanceof JsonObject dep)
                 || !m.pack().headerUuid().equals(dep.has("uuid") ? dep.get("uuid").getAsString() : null)
                 || !GSON.toJsonTree(m.pack().version()).equals(dep.get("version"))) {
+            return false;
+        }
+        if (!(bpManifest.get("modules") instanceof com.google.gson.JsonArray modules) || modules.size() != (hasScript ? 2 : 1)) {
+            return false;
+        }
+        if (hasScript && (!GSON.toJsonTree(BedrockMachineMenus.dependencies().get(0)).equals(deps.get(1))
+                || !GSON.toJsonTree(BedrockMachineMenus.dependencies().get(1)).equals(deps.get(2))
+                || !GSON.toJsonTree(BedrockMachineMenus.module(UUID.fromString(m.behaviorPack().headerUuid()))).equals(modules.get(1)))) {
             return false;
         }
         // 対応表の BP のファイルと、BP の中身が一致する
@@ -696,7 +768,8 @@ public final class PackCompiler {
         if (manifest == null || !(manifest.get("header") instanceof JsonObject h) || !h.has("uuid")) {
             return false;
         }
-        return info.headerUuid().equals(h.get("uuid").getAsString()) && GSON.toJsonTree(info.version()).equals(h.get("version"));
+        return info.headerUuid().equals(h.get("uuid").getAsString()) && GSON.toJsonTree(info.version()).equals(h.get("version"))
+                && GSON.toJsonTree(info.minEngineVersion()).equals(h.get("min_engine_version"));
     }
 
     private static JsonObject parseObject(byte[] b) {
@@ -717,6 +790,9 @@ public final class PackCompiler {
     static Map<String, byte[]> withDependency(Map<String, byte[]> files, String rpUuid, List<Integer> rpVersion) {
         Map<String, byte[]> m = new TreeMap<>(files);
         m.put("\0dependency", (rpUuid + " " + rpVersion).getBytes(StandardCharsets.UTF_8));
+        if (files.containsKey(BedrockMachineMenus.ENTRY)) {
+            m.put("\0script_dependencies", json(BedrockMachineMenus.dependencies()));
+        }
         return m;
     }
 

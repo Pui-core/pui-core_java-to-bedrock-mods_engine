@@ -17,7 +17,7 @@ base { archivesName = 'modbridge-fabric' }
 // コンパイル時だけ参照する（実行時は、サーバーに入っている Geyser を使う）。値は scripts/spike-server.sh と同じ。
 def geyserUrl = 'https://download.geysermc.org/v2/projects/geyser/versions/2.12.1/builds/1312/downloads/fabric'
 def geyserSha = '9c059b51af0bd534922ca9633996fd124543291d137b9373edc95fc1a0d59276'
-def geyserNested = ['META-INF/jars/events-1.1-SNAPSHOT.jar', 'META-INF/jars/base-api-1.0.3.jar']
+def geyserNested = ['META-INF/jars/events-1.1-SNAPSHOT.jar', 'META-INF/jars/base-api-1.0.3.jar', 'META-INF/jars/cumulus-1.1.2.jar']
 def geyserDir = layout.buildDirectory.dir('geyser-api')
 
 def fetchGeyserApi = tasks.register('fetchGeyserApi') {
@@ -66,7 +66,7 @@ dependencies {
 	include('dev.puicore.modbridge:core:' + project.core_version)
 
 	compileOnly files(geyserDir.map { it.file('Geyser-Fabric.jar') }, geyserDir.map { it.file('events-1.1-SNAPSHOT.jar') },
-			geyserDir.map { it.file('base-api-1.0.3.jar') }).builtBy(fetchGeyserApi)
+			geyserDir.map { it.file('base-api-1.0.3.jar') }, geyserDir.map { it.file('cumulus-1.1.2.jar') }).builtBy(fetchGeyserApi)
 }
 
 processResources {

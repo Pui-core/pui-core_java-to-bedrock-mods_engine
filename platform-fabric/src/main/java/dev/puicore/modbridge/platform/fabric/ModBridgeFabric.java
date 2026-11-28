@@ -41,6 +41,9 @@ public final class ModBridgeFabric implements DedicatedServerModInitializer {
         String dumpTarget = System.getProperty("modbridge.registryDump");
         boolean stop = Boolean.getBoolean("modbridge.registryDump.stop");
         boolean geyser = FabricLoader.getInstance().isModLoaded("geyser-fabric");
+        if (geyser) {
+            new ServerMachineMenus().install();
+        }
 
         boolean permissive = policy == Policy.PERMISSIVE && geyser;
         if (permissive) {

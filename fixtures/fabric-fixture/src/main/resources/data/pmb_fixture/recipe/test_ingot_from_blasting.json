@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:blasting",
+  "ingredient": "pmb_fixture:test_block",
+  "result": {
+    "id": "pmb_fixture:test_ingot"
+  },
+  "cookingtime": 200,
+  "experience": 0.3
+}

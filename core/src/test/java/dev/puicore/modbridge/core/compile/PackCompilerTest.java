@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonParser;
+import dev.puicore.modbridge.core.adapter.AdapterRules;
 import dev.puicore.modbridge.core.ir.BridgeIr;
 import dev.puicore.modbridge.core.scan.Analyzer;
 import java.awt.image.BufferedImage;
@@ -512,6 +513,57 @@ class PackCompilerTest {
         assertEquals(1, mapping(r).notConverted().size());
     }
 
+    @Test
+    void 対象版の加工ルールからスクリプトと識別子を反映しキャッシュでも復元する() throws IOException {
+        Path fixture = jar("fixture.jar", fixture("pmb_fixture"));
+        List<Path> inputs = List.of(fixture);
+        BridgeIr ir = Analyzer.analyzePaths(inputs);
+        Path ruleFile = dir.resolve("rules.json");
+        String declaration = """
+                {"schema":"modbridge.adapter-rules","schemaVersion":1,"adapters":[{
+                  "id":"test:machine","targetMod":"pmb_fixture","versions":["1.0.0"],"modes":["B"],
+                  "mappings":[{"kind":"BLOCK","source":"pmb_fixture:test_block","destination":"test:machine"},
+                              {"kind":"ITEM","source":"pmb_fixture:test_ingot","destination":"test:ingot"}],
+                  "menus":[{"id":"test:menu","title":"加工台","blocks":["pmb_fixture:test_block"],"maxDistance":5,
+                    "recipes":[{"id":"test:recipe","label":"加工","input":{"item":"minecraft:copper_ingot","count":2},
+                      "output":{"item":"pmb_fixture:test_ingot","count":1}}]}]
+                }]}
+                """;
+        Files.writeString(ruleFile, declaration);
+        var settings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        var result = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), settings);
+        assertTrue(result.ok(), result.diagnostics().toString());
+        var bp = unzip(result.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        assertTrue(bp.containsKey("blocks/test/machine.json"));
+        assertFalse(bp.containsKey("items/test/machine.json"));
+        assertTrue(bp.containsKey("items/test/ingot.json"));
+        assertTrue(text(bp, "recipes/pmb_fixture/test_block.json").contains("\"item\": \"test:ingot\""));
+        assertTrue(text(bp, "recipes/pmb_fixture/test_block.json").contains("\"item\": \"test:machine\""));
+        assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"block\": \"test:machine\""));
+        assertTrue(text(bp, BedrockMachineMenus.ENTRY).contains("\"item\": \"test:ingot\""));
+        assertTrue(text(bp, "manifest.json").contains("\"module_name\": \"@minecraft/server-ui\""));
+        assertEquals(List.of(1, 21, 100), result.mapping().behaviorPack().minEngineVersion());
+        String key = PackPublisher.cacheKey(ir, settings);
+        Path cache = dir.resolve("cache");
+        PackPublisher.writeCache(cache, key, result.outputs());
+        assertEquals(result.mapping(), PackPublisher.readCachedResult(cache, key).mapping());
+
+        Files.writeString(ruleFile, declaration.replace("1.0.0", "0.9.0"));
+        var inactiveSettings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        assertNotEquals(key, PackPublisher.cacheKey(ir, inactiveSettings));
+        var inactive = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), inactiveSettings);
+        assertTrue(inactive.ok(), inactive.diagnostics().toString());
+        assertFalse(unzip(inactive.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE)).containsKey(BedrockMachineMenus.ENTRY));
+
+        Files.writeString(ruleFile, declaration.replace(
+                "\"output\":{\"item\":\"pmb_fixture:test_ingot\"", "\"output\":{\"item\":\"pmb_fixture:missing\""));
+        var invalidSettings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(ruleFile));
+        var invalid = PackCompiler.compile(ir, Analyzer.jarFiles(inputs), invalidSettings);
+        assertFalse(invalid.ok());
+        assertTrue(invalid.outputs().isEmpty());
+        assertTrue(invalid.diagnostics().stream().anyMatch(d -> d.code().equals("ADAPTER_RULES_INVALID")));
+    }
+
     private static String unlockedBy(String recipe, String kind) {
         return JsonParser.parseString(recipe).getAsJsonObject().getAsJsonObject(kind)
                 .getAsJsonArray("unlock").get(0).getAsJsonObject().get("item").getAsString();
@@ -523,7 +575,11 @@ class PackCompilerTest {
         m.put("data/rec/recipe/tagged.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"#c:ingots\"],"
                 + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
         m.put("data/rec/recipe/smelt.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"rec:test_block\","
+                + "\"result\":{\"id\":\"rec:test_ingot\",\"count\":2}}"));
+        m.put("data/rec/recipe/smelt_tagged.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"#c:ingots\","
                 + "\"result\":{\"id\":\"rec:test_ingot\"}}"));
+        m.put("data/rec/recipe/smelt_fractional.json", u("{\"type\":\"minecraft:smelting\",\"ingredient\":\"rec:test_block\","
+                + "\"result\":{\"id\":\"rec:test_ingot\",\"count\":1.5}}"));
         m.put("data/rec/recipe/vanilla.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"minecraft:iron_ingot\","
                 + "\"rec:test_ingot\"],\"result\":{\"id\":\"rec:test_block\"}}"));
         m.put("data/rec/recipe/unknown_result.json", u("{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[\"rec:test_ingot\"],"
@@ -533,10 +589,58 @@ class PackCompilerTest {
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:tagged").status());
         assertTrue(bpEntry(r, "RECIPE", "rec:tagged").notes().get(0).contains("タグ"));
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt_tagged").status());
+        assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:smelt_fractional").status());
         assertEquals("SKIPPED", bpEntry(r, "RECIPE", "rec:unknown_result").status());
         assertEquals("PARTIAL", bpEntry(r, "RECIPE", "rec:vanilla").status());
         assertTrue(r.diagnostics().stream().anyMatch(d -> d.code().equals("VANILLA_ID_ASSUMED") && d.subject().equals("rec:vanilla")));
         assertTrue(r.diagnostics().stream().filter(d -> d.code().equals("RECIPE_UNSUPPORTED")).count() >= 3);
+    }
+
+    @Test
+    void 加熱レシピを機器別に生成し_材料と結果の対応付けを使う() throws IOException {
+        Map<String, byte[]> m = fixture("cook");
+        Map<String, List<String>> stations = Map.of(
+                "smelting", List.of("furnace"),
+                "blasting", List.of("blast_furnace"),
+                "smoking", List.of("smoker"),
+                "campfire_cooking", List.of("campfire", "soul_campfire"));
+        for (String type : stations.keySet()) {
+            m.put("data/cook/recipe/" + type + ".json", u("""
+                    {"type":"minecraft:%s","ingredient":"cook:test_block","result":{"id":"cook:test_ingot"},
+                     "cookingtime":200,"experience":0.7}
+                    """.formatted(type)));
+        }
+        m.put("data/cook/recipe/vanilla_input.json", u("""
+                {"type":"minecraft:blasting","ingredient":"minecraft:raw_gold","result":{"id":"cook:test_ingot"}}
+                """));
+        List<Path> inputs = List.of(jar("cook.jar", m));
+        Path rules = Files.writeString(dir.resolve("cook-rules.json"), """
+                {"schema":"modbridge.adapter-rules","schemaVersion":1,"adapters":[{
+                  "id":"cook:rules","targetMod":"cook","versions":["1.0.0"],"modes":["B"],
+                  "mappings":[{"kind":"BLOCK","source":"cook:test_block","destination":"cook:raw"},
+                              {"kind":"ITEM","source":"cook:test_ingot","destination":"cook:cooked"}]
+                }]}
+                """);
+        var settings = new PackCompiler.Settings("Fixture", "fixture", AdapterRules.readDocument(rules));
+        PackCompiler.Result r = PackCompiler.compile(Analyzer.analyzePaths(inputs), Analyzer.jarFiles(inputs), settings);
+        assertTrue(r.ok(), r.diagnostics().toString());
+        Map<String, byte[]> bp = unzip(r.outputs().get(PackCompiler.BEHAVIOR_PACK_FILE));
+        for (var station : stations.entrySet()) {
+            String id = "cook:" + station.getKey();
+            BehaviorPack.Entry entry = bpEntry(r, "RECIPE", id);
+            assertEquals("PARTIAL", entry.status());
+            var recipe = JsonParser.parseString(text(bp, entry.file())).getAsJsonObject();
+            var furnace = recipe.getAsJsonObject("minecraft:recipe_furnace");
+            assertEquals(id, furnace.getAsJsonObject("description").get("identifier").getAsString());
+            assertEquals(station.getValue(), furnace.getAsJsonArray("tags").asList().stream().map(e -> e.getAsString()).toList());
+            assertEquals("cook:raw", furnace.get("input").getAsString());
+            assertEquals("cook:cooked", furnace.get("output").getAsString());
+            assertFalse(furnace.has("unlock"));
+            assertTrue(r.diagnostics().stream().anyMatch(d -> d.subject().equals(id) && d.code().equals("RECIPE_COOKING_DEFAULTS")));
+            assertFalse(r.diagnostics().stream().anyMatch(d -> d.subject().equals(id) && d.code().equals("VANILLA_ID_ASSUMED")));
+        }
+        assertEquals(2, bpEntry(r, "RECIPE", "cook:vanilla_input").notes().size());
     }
 
     @Test

@@ -8,7 +8,8 @@
 	"license": "LicenseRef-Undecided",
 	"environment": "*",
 	"entrypoints": {
-		"main": ["dev.puicore.modbridge.fixture.FixtureMod"]
+		"main": ["dev.puicore.modbridge.fixture.FixtureMod"],
+		"modbridge-adapter": ["dev.puicore.modbridge.fixture.FixtureMachineAdapter"]
 	},
 	"depends": {
 		"fabricloader": ">=0.20.1",

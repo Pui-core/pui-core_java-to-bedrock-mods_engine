@@ -16,6 +16,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -274,6 +275,48 @@ class BdsInstallerTest {
         assertEquals(before, restoredContents());
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, "../../etc", true));
         assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, false));
+    }
+
+    @Test
+    void 復旧用のコピーをすべて用意できなければ現在のワールドとパックを変えない() throws Exception {
+        BdsInstaller.apply(bds, packs, null, true);
+        Map<String, String> initial = restoredContents();
+        compilePacks(packs, "next_ingot");
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Files.writeString(world.resolve("db/state"), "after update");
+        Path blockedParent = bds.resolve("resource_packs");
+        Path movedAside = dir.resolve("resource_packs_moved_aside");
+        Files.move(blockedParent, movedAside);
+        Files.writeString(blockedParent, "file blocks restore staging");
+        Map<String, String> before = snapshot();
+
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+        assertEquals(before, snapshot());
+        Files.delete(blockedParent);
+        Files.move(movedAside, blockedParent);
+        BdsInstaller.rollback(bds, id, true);
+        assertEquals(initial, restoredContents());
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void 復旧の最後にワールドの移動に失敗したら交換済みのパックも戻す() throws Exception {
+        Path worldFile = world.resolve("level.dat");
+        Files.writeString(worldFile, "initial world");
+        BdsInstaller.apply(bds, packs, null, true);
+        Map<String, String> initial = restoredContents();
+        compilePacks(packs, "next_ingot");
+        String id = BdsInstaller.apply(bds, packs, null, true);
+        Files.writeString(worldFile, "world after update");
+        Map<String, String> before = snapshot();
+        var denyDelete = (OpenOption) Class.forName("com.sun.nio.file.ExtendedOpenOption").getField("NOSHARE_DELETE").get(null);
+        try (var reader = FileChannel.open(worldFile, StandardOpenOption.READ, denyDelete)) {
+            assertTrue(reader.isOpen());
+            assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.rollback(bds, id, true));
+        }
+        assertEquals(before, snapshot());
+        BdsInstaller.rollback(bds, id, true);
+        assertEquals(initial, restoredContents());
     }
 
     @Test

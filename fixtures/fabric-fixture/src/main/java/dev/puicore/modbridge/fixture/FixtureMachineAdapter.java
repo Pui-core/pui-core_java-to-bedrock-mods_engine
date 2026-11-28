@@ -15,7 +15,7 @@ public final class FixtureMachineAdapter implements Adapter {
 
     @Override
     public void register(Registrar registrar) {
-        var recipe = new Recipe("pmb_fixture:refine_copper", "銅インゴット2個を試験インゴット1個に加工",
+        var recipe = new Recipe("pmb_fixture:refine_copper", "銅2個で試験用インゴット1個",
                 new ItemAmount("minecraft:copper_ingot", 2), new ItemAmount("pmb_fixture:test_ingot", 1));
         registrar.menu(new Menu("pmb_fixture:processing_bench", "試験用加工台", Set.of("pmb_fixture:test_block"), 5,
                 List.of(recipe)));

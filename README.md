@@ -88,6 +88,8 @@ fixture 0.0.4 に含まれる `FixtureMachineAdapter` は、`pmb_fixture` を許
 
 `-Dmodbridge.adapters.rules=<JSONファイル>` では、対象の MOD・版・モードと加工内容を宣言できます。[Compressed Blocks 1.0.3 用の例](fixtures/adapter-rules/compressed-blocks.json)を指定すると、Bedrock から鍛冶台を操作して丸石9個を圧縮できます。ルールはサーバーの運用者が指定します。
 
+Minecraft for Windows 26.65 で、認証付きの隔離 Fabric/Geyser に参加し、両方の加工画面と所持品・アクションバーへの反映を確認済みです。フォームを開いてから加工台の操作範囲を離れると、加工は行われず所持品が維持されました。
+
 ### Mode B の加工ルール
 
 ```sh

@@ -83,7 +83,11 @@ public final class BdsInstaller {
         }
     }
 
-    private record Pack(String uuid, List<Integer> version, Map<String, byte[]> files) {}
+    private record Pack(String uuid, List<Integer> version, JsonObject manifest, Map<String, byte[]> files) {}
+
+    private record Bundle(Pack behavior, Pack resource) {}
+
+    private record PreparedPlan(Plan plan, Bundle bundle) {}
 
     private BdsInstaller() {}
 
@@ -97,11 +101,16 @@ public final class BdsInstaller {
      * @param world   ワールド名。null なら server.properties の level-name
      */
     public static Plan plan(Path bds, Path packDir, String world) {
+        return prepare(bds, packDir, world).plan();
+    }
+
+    private static PreparedPlan prepare(Path bds, Path packDir, String world) {
         List<String> problems = new ArrayList<>();
         List<Action> actions = new ArrayList<>();
         Path root = bds.toAbsolutePath().normalize();
         if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-            return new Plan(world, actions, List.of("BDS のフォルダーが無い（シンボリックリンクは使えない）"), null, null, null, null);
+            return new PreparedPlan(new Plan(world, actions, List.of("BDS のフォルダーが無い（シンボリックリンクは使えない）"),
+                    null, null, null, null), null);
         }
         if (!Files.isRegularFile(root.resolve("bedrock_server")) && !Files.isRegularFile(root.resolve("bedrock_server.exe"))) {
             problems.add("bedrock_server（.exe）が無い。BDS のフォルダーを指定する");
@@ -119,9 +128,11 @@ public final class BdsInstaller {
         }
         Pack bp = null;
         Pack rp = null;
+        Bundle bundle = null;
         try {
-            bp = readPack(packDir.resolve("modbridge-bp.mcpack"), "data");
-            rp = readPack(packDir.resolve("modbridge-rp.mcpack"), "resources");
+            bundle = readBundle(packDir);
+            bp = bundle.behavior();
+            rp = bundle.resource();
         } catch (InstallException e) {
             problems.add(e.getMessage());
         }
@@ -147,8 +158,9 @@ public final class BdsInstaller {
                 actions.add(new Action("UPDATE_JSON", "worlds/" + w + "/world_resource_packs.json", "pack_id " + rp.uuid() + " を " + rp.version() + " にする"));
             }
         }
-        return new Plan(w, List.copyOf(actions), List.copyOf(problems), bp == null ? null : bp.uuid(), bp == null ? null : bp.version(),
-                rp == null ? null : rp.uuid(), rp == null ? null : rp.version());
+        return new PreparedPlan(new Plan(w, List.copyOf(actions), List.copyOf(problems),
+                bp == null ? null : bp.uuid(), bp == null ? null : bp.version(),
+                rp == null ? null : rp.uuid(), rp == null ? null : rp.version()), bundle);
     }
 
     /** ワールド名として使えるか。解決したパスが worlds/ の直下でなければならない。 */
@@ -169,7 +181,8 @@ public final class BdsInstaller {
      * @return 作ったバックアップの ID（rollback に使う）
      */
     public static String apply(Path bds, Path packDir, String world, boolean confirmedStopped) throws InstallException {
-        Plan plan = plan(bds, packDir, world);
+        PreparedPlan prepared = prepare(bds, packDir, world);
+        Plan plan = prepared.plan();
         if (!plan.ok()) {
             throw new InstallException("配置できない: " + String.join(" / ", plan.problems()));
         }
@@ -178,14 +191,8 @@ public final class BdsInstaller {
         }
         Path root = bds.toAbsolutePath().normalize();
         Path worldDir = root.resolve("worlds").resolve(plan.world());
-        Pack bp;
-        Pack rp;
-        try {
-            bp = readPack(packDir.resolve("modbridge-bp.mcpack"), "data");
-            rp = readPack(packDir.resolve("modbridge-rp.mcpack"), "resources");
-        } catch (InstallException e) {
-            throw e;
-        }
+        Pack bp = prepared.bundle().behavior();
+        Pack rp = prepared.bundle().resource();
         try (WorldLock lock = WorldLock.acquire(worldDir)) {
             lock.ensureHeld();
             String id = backup(root, plan.world());
@@ -619,6 +626,33 @@ public final class BdsInstaller {
         return name.trim();
     }
 
+    /** 一緒に生成したパックの組であることを、BP が要求する RP の UUID と版で確認する。 */
+    private static Bundle readBundle(Path packDir) throws InstallException {
+        Pack bp = readPack(packDir.resolve("modbridge-bp.mcpack"), "data");
+        Pack rp = readPack(packDir.resolve("modbridge-rp.mcpack"), "resources");
+        if (bp.uuid().equalsIgnoreCase(rp.uuid())) {
+            throw new InstallException("ビヘイビアパックとリソースパックの UUID が同じ");
+        }
+        if (!(bp.manifest().get("dependencies") instanceof JsonArray dependencies)) {
+            throw new InstallException("ビヘイビアパックにリソースパックへの依存が無い");
+        }
+        var references = dependencies.asList().stream().filter(JsonElement::isJsonObject)
+                .map(JsonElement::getAsJsonObject)
+                .filter(entry -> entry.get("uuid") instanceof JsonPrimitive uuid && uuid.isString()
+                        && !entry.has("module_name") && rp.uuid().equalsIgnoreCase(uuid.getAsString()))
+                .toList();
+        if (references.size() != 1 || !matchesVersion(references.getFirst().get("version"), rp.version())) {
+            throw new InstallException("ビヘイビアパックの依存先とリソースパックの UUID または版が一致しない。同じ compile の出力を使う");
+        }
+        return new Bundle(bp, rp);
+    }
+
+    private static boolean matchesVersion(JsonElement declared, List<Integer> version) {
+        String dotted = version.get(0) + "." + version.get(1) + "." + version.get(2);
+        return GSON.toJsonTree(version).equals(declared)
+                || (declared instanceof JsonPrimitive value && value.isString() && dotted.equals(value.getAsString()));
+    }
+
     /** .mcpack を上限付きで展開し、manifest の UUID・版・モジュールの種類を確かめる。 */
     private static Pack readPack(Path mcpack, String moduleType) throws InstallException {
         if (!Files.isRegularFile(mcpack)) {
@@ -666,7 +700,7 @@ public final class BdsInstaller {
                 throw new InstallException(mcpack.getFileName() + " のモジュールの種類か版が違う");
             }
             java.util.UUID.fromString(uuid);
-            return new Pack(uuid, List.copyOf(version), files);
+            return new Pack(uuid, List.copyOf(version), manifest, files);
         } catch (RuntimeException e) {
             throw new InstallException(mcpack.getFileName() + " の manifest.json が無いか不正", e);
         }

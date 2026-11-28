@@ -17,6 +17,7 @@ import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
@@ -110,6 +111,27 @@ class BdsInstallerTest {
         Map<String, String> before = snapshot();
         var e = assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, false));
         assertTrue(e.getMessage().contains("--confirm-stopped"));
+        assertEquals(before, snapshot());
+    }
+
+    @Test
+    void 同じUUIDで版が違うパックを組み合わせると何も変更せず拒否する() throws Exception {
+        BdsInstaller.Plan initial = BdsInstaller.plan(bds, packs, null);
+        BdsInstaller.apply(bds, packs, null, true);
+        Path newer = dir.resolve("new-output");
+        compilePacks(newer, "other_ingot");
+        BdsInstaller.Plan updated = BdsInstaller.plan(bds, newer, null);
+        assertTrue(updated.ok(), updated.problems().toString());
+        assertEquals(initial.rpUuid(), updated.rpUuid());
+        assertFalse(initial.rpVersion().equals(updated.rpVersion()));
+        Files.copy(newer.resolve("modbridge-rp.mcpack"), packs.resolve("modbridge-rp.mcpack"),
+                StandardCopyOption.REPLACE_EXISTING);
+        Map<String, String> before = snapshot();
+        BdsInstaller.Plan mixed = BdsInstaller.plan(bds, packs, null);
+        assertFalse(mixed.ok());
+        assertTrue(mixed.actions().isEmpty());
+        assertTrue(mixed.problems().stream().anyMatch(reason -> reason.contains("UUID または版")));
+        assertThrows(BdsInstaller.InstallException.class, () -> BdsInstaller.apply(bds, packs, null, true));
         assertEquals(before, snapshot());
     }
 

@@ -275,6 +275,8 @@ public final class BdsInstaller {
             } catch (IOException e) {
                 throw new InstallException("元に戻したが、その間に BDS が起動した可能性がある。BDS を止めてから、もう一度 rollback する", e);
             }
+        } catch (ReplacementCleanupException e) {
+            throw new InstallException(e.getMessage(), e);
         } catch (IOException | RuntimeException e) {
             throw new InstallException("元に戻せない（" + message(e) + "）。バックアップ " + backupId + " は残っている", e);
         }
@@ -549,86 +551,150 @@ public final class BdsInstaller {
     }
 
     /**
-     * バックアップから戻す。検査は {@link #readBackup} で済ませてある。
-     *
-     * @param fullWorld true ならワールドのフォルダーごと戻す（rollback）。false なら、ワールドのうち配置で変える
-     *                  2 つの JSON だけを戻す（配置の失敗時。ワールドの DB はロック中で、配置では触らないため）
+     * バックアップから戻す。配置失敗時は、ワールドのうち配置で触るパック一覧だけを復旧する。
      */
-    private static void restore(Path root, Backup b, boolean fullWorld) throws IOException {
-        for (var e : b.existed().entrySet()) {
-            String rel = e.getKey();
-            Path target = root.resolve(rel);
-            Path saved = e.getValue() ? b.dir().resolve(rel) : null;
-            if (rel.startsWith("worlds/") && !fullWorld) {
-                for (String json : List.of("world_behavior_packs.json", "world_resource_packs.json")) {
-                    Path s = saved == null ? null : saved.resolve(json);
-                    if (s != null && Files.isRegularFile(s)) {
-                        // 一時ファイルに写してから置き換える（途中で止まっても JSON が消えたままにならない）
-                        Path tmp = Files.createTempFile(target, "." + json, ".tmp");
-                        try {
-                            Files.copy(s, tmp, StandardCopyOption.REPLACE_EXISTING);
-                            move(tmp, target.resolve(json));
-                        } finally {
-                            Files.deleteIfExists(tmp);
-                        }
-                    } else {
-                        Files.deleteIfExists(target.resolve(json));
-                    }
+    private static void restore(Path root, Backup backup, boolean fullWorld) throws IOException {
+        List<Replacement> replacements = new ArrayList<>();
+        for (var entry : backup.existed().entrySet()) {
+            String relative = entry.getKey();
+            Path target = root.resolve(relative);
+            Path saved = entry.getValue() ? backup.dir().resolve(relative) : null;
+            boolean isWorld = relative.startsWith("worlds/");
+            if (isWorld && !fullWorld) {
+                for (String name : List.of("world_behavior_packs.json", "world_resource_packs.json")) {
+                    Path savedList = saved.resolve(name); // バックアップにはワールドが必ずある
+                    replacements.add(new Replacement(target.resolve(name),
+                            Files.isRegularFile(savedList) ? savedList : null, false, false));
                 }
+            } else {
+                boolean recreateDbLock = isWorld && Files.isRegularFile(target.resolve("db/LOCK"));
+                replacements.add(new Replacement(target, saved, true, recreateDbLock));
+            }
+        }
+        replaceAll(replacements);
+    }
+
+    /** 元が無かった対象は source が null。 */
+    private record Replacement(Path target, Path source, boolean directory, boolean recreateDbLock) {}
+
+    private static void replaceAll(List<Replacement> replacements) throws IOException {
+        List<ReplacementSwap> swaps = new ArrayList<>();
+        try {
+            for (Replacement replacement : replacements) {
+                var swap = new ReplacementSwap(replacement.target());
+                swaps.add(swap);
+                swap.prepare(replacement);
+            }
+            for (ReplacementSwap swap : swaps) {
+                swap.install();
+            }
+        } catch (IOException | RuntimeException failure) {
+            List<String> notRestored = new ArrayList<>();
+            for (ReplacementSwap swap : swaps.reversed()) {
+                try {
+                    swap.undo();
+                } catch (IOException | RuntimeException undo) {
+                    failure.addSuppressed(undo);
+                    notRestored.add(swap.original == null ? swap.target.getFileName().toString()
+                            : swap.original.getParent().getFileName() + "/" + swap.original.getFileName());
+                }
+                try {
+                    swap.discardStaged();
+                } catch (IOException | RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+            }
+            if (!notRestored.isEmpty()) {
+                throw new IOException("操作前の状態に戻せなかった。対象または退避先: " + String.join("、", notRestored), failure);
+            }
+            throw failure;
+        }
+
+        IOException cleanupFailure = null;
+        for (ReplacementSwap swap : swaps) {
+            if (swap.original == null) {
                 continue;
             }
-            // ロックファイルはバックアップしないので、戻す前にあったら作り直す（LevelDB も無ければ作るが、元の形に揃える）
-            replaceTree(target, saved, rel.startsWith("worlds/") && Files.isRegularFile(target.resolve("db").resolve("LOCK")));
+            try {
+                deleteTree(swap.original);
+            } catch (IOException | RuntimeException e) {
+                var failure = new IOException("退避先 " + swap.original.getFileName() + " を削除できない", e);
+                if (cleanupFailure == null) {
+                    cleanupFailure = failure;
+                } else {
+                    cleanupFailure.addSuppressed(failure);
+                }
+            }
+        }
+        if (cleanupFailure != null) {
+            throw new ReplacementCleanupException(cleanupFailure);
         }
     }
 
-    /**
-     * {@code target} を {@code source} の複製で置き換える（{@code source} が null なら消す）。
-     * 先に一時フォルダーへ複製してから入れ替えるので、複製に失敗しても {@code target} は元のまま残る。
-     */
-    private static void replaceTree(Path target, Path source, boolean recreateDbLock) throws IOException {
-        Path parent = target.getParent();
-        Files.createDirectories(parent);
-        String name = target.getFileName().toString();
-        Path staged = null;
-        Path old = null;
-        try {
-            if (source != null) {
-                staged = Files.createTempDirectory(parent, "." + name + ".restore");
-                copyTree(source, staged, false);
-                if (recreateDbLock && Files.isDirectory(staged.resolve("db")) && !Files.exists(staged.resolve("db").resolve("LOCK"))) {
-                    Files.createFile(staged.resolve("db").resolve("LOCK"));
-                }
+    private static final class ReplacementCleanupException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        ReplacementCleanupException(IOException cause) {
+            super("入れ替えは完了したが、" + cause.getMessage(), cause);
+        }
+    }
+
+    private static final class ReplacementSwap {
+        private final Path target;
+        private Path staged;
+        private Path original;
+        private boolean installed;
+
+        ReplacementSwap(Path target) {
+            this.target = target;
+        }
+
+        void prepare(Replacement replacement) throws IOException {
+            Path parent = target.getParent();
+            String prefix = "." + target.getFileName() + ".restore";
+            Files.createDirectories(parent);
+            if (replacement.source() == null) {
+                return;
             }
+            if (replacement.directory()) {
+                staged = Files.createTempDirectory(parent, prefix);
+                copyTree(replacement.source(), staged, false);
+                Path dbLock = staged.resolve("db/LOCK");
+                if (replacement.recreateDbLock() && Files.isDirectory(dbLock.getParent()) && !Files.exists(dbLock)) {
+                    Files.createFile(dbLock);
+                }
+            } else {
+                staged = Files.createTempFile(parent, prefix, ".tmp");
+                Files.copy(replacement.source(), staged, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+
+        void install() throws IOException {
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                old = parent.resolve("." + name + ".old-" + Long.toHexString(System.nanoTime()));
-                move(target, old);
+                Path aside = target.resolveSibling("." + target.getFileName() + ".old-" + Long.toHexString(System.nanoTime()));
+                move(target, aside);
+                original = aside;
             }
             if (staged != null) {
-                try {
-                    move(staged, target);
-                    staged = null;
-                } catch (IOException e) {
-                    if (old != null) {
-                        Path keep = old;
-                        old = null; // 元に戻せなくても、旧フォルダーは消さない
-                        try {
-                            move(keep, target);
-                        } catch (IOException restore) {
-                            e.addSuppressed(restore);
-                            throw new IOException("入れ替えに失敗し、元のフォルダーも戻せなかった。元のフォルダーは " + keep.getFileName()
-                                    + " に残している", e);
-                        }
-                    }
-                    throw e;
-                }
+                move(staged, target);
+                installed = true;
             }
-        } finally {
-            if (staged != null) {
+        }
+
+        void undo() throws IOException {
+            if (installed) {
+                move(target, staged);
+                installed = false;
+            }
+            if (original != null) {
+                move(original, target);
+                original = null;
+            }
+        }
+
+        void discardStaged() throws IOException {
+            if (staged != null && !installed) {
                 deleteTree(staged);
-            }
-            if (old != null) {
-                deleteTree(old);
             }
         }
     }
@@ -648,7 +714,7 @@ public final class BdsInstaller {
                 Files.write(p, f.getValue());
             }
             // 書き終えたものと入れ替える（途中で失敗しても、元のフォルダーは残る）
-            replaceTree(parent.resolve(name), tmp, false);
+            replaceAll(List.of(new Replacement(parent.resolve(name), tmp, true, false)));
         } finally {
             deleteTree(tmp);
         }

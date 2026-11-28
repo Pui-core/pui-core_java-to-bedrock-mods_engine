@@ -160,6 +160,7 @@ public final class BehaviorPack {
         String type = str(r.get("type"));
         List<String> notes = new ArrayList<>();
         Set<String> vanilla = new TreeSet<>();
+        Set<String> ingredientsForUnlock = new TreeSet<>();
         Map<String, Object> result = result(r.get("result"), available, vanilla);
         if (result == null) {
             return Recipe.fail("結果が単一のアイテムでないか、変換していないアイテム");
@@ -183,7 +184,8 @@ public final class BehaviorPack {
             }
             Set<String> used = new TreeSet<>();
             rows.forEach(row -> row.chars().filter(c -> c != ' ').forEach(c -> used.add(String.valueOf((char) c))));
-            if (!used.equals(new TreeSet<>(keys.keySet())) || keys.keySet().stream().anyMatch(k -> k.length() != 1 || k.equals(" "))) {
+            if (used.isEmpty() || !used.equals(new TreeSet<>(keys.keySet()))
+                    || keys.keySet().stream().anyMatch(k -> k.length() != 1 || k.equals(" "))) {
                 return Recipe.fail("pattern の文字と key が対応していない（未定義の文字か、使われないキーがある）");
             }
             Map<String, Object> outKeys = new TreeMap<>();
@@ -192,6 +194,7 @@ public final class BehaviorPack {
                 if (id == null) {
                     return Recipe.fail("材料 " + k.getKey() + " がタグ・複数候補・変換していないアイテムのどれか（非対応）");
                 }
+                ingredientsForUnlock.add(id);
                 outKeys.put(k.getKey(), Map.of("item", id));
             }
             body.put("pattern", rows);
@@ -209,6 +212,7 @@ public final class BehaviorPack {
                 }
                 counts.merge(id, 1, Integer::sum);
             }
+            ingredientsForUnlock.addAll(counts.keySet());
             List<Object> outIngredients = new ArrayList<>();
             counts.forEach((id, n) -> {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -221,6 +225,8 @@ public final class BehaviorPack {
         } else {
             return Recipe.fail("レシピの種類 " + type + " は非対応（作業台のレシピだけ。かまどなどは v0.4.0）");
         }
+        // Bedrock の 1.20 以降の書式には発見条件が必要なので、変換した材料を使う。
+        body.put("unlock", ingredientsForUnlock.stream().map(id -> Map.of("item", id)).toList());
         body.put("result", result);
         if (!vanilla.isEmpty()) {
             notes.add("バニラのアイテム ID は Java と同じとみなした（Bedrock で名前が違うものがある）: " + String.join(", ", vanilla));

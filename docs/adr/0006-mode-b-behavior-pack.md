@@ -1,6 +1,6 @@
 # ADR-0006: Mode B のビヘイビアパック生成と .mcaddon
 
-- 状態: 採用（BDS・実機では未検証）
+- 状態: 採用（Minecraft for Windows 26.65 で素材とレシピを確認、公式 BDS は未検証）
 - 日付: 2026-11-27
 - 関連: #6, #4, #1、前提は ADR-0004
 
@@ -90,10 +90,15 @@ Mode B では、Java の MOD のコードを BDS で動かさず、宣言デー�
   - `DATA_NOT_CONVERTED`: pmb_fixture（`data/minecraft/tags` 1、`data/pmb_fixture/loot_table` 1）
   - 別々の JVM で 3 回作って、成果物のバイト列が一致した
 
+## Minecraft for Windows 26.65 のローカル実測（2026-11-28）
+
+- Bedrock のコンテンツログで、`unlock` がない 1.20 以降のレシピが読み込まれないことを確認した。
+- 変換後の材料 ID を解放条件に入れた定形・不定形レシピは、純正クライアントで読み込みエラーがなく、作業台で fixture のブロック1個からインゴット9個を得て、ブロック1個へ戻せた。Java の進捗に基づく解放条件の変換は対象外。
+
 ## 未検証・既知の制約
 
-- **BDS とローカルワールドでの動作確認は未実施**。書式は資料（Microsoft Learn）に基づく。BDS の起動には、Minecraft の EULA とプライバシーポリシーへの同意が要る。これは owner の判断なので、別に確認してから行う。
-- 次の PR で、BDS への配置（dry-run 既定、停止中のバックアップ、apply・rollback、`world_resource_packs.json`・`world_behavior_packs.json`）を扱う。
+- 公式 BDS でのパック読込、複数人参加、再起動後の保存は未確認。
+- BDS への配置と復旧の設計は [ADR-0007](0007-bds-install-and-rollback.md) を参照。
 - Java のコードで決まる性質は、Mode A で取得した実行時レジストリから補える見込み。実行時レジストリにスタック数・硬さなどを足すのは、将来の課題。
 - レシピのバニラのアイテム ID の対応表は無い。
 - 立方体以外の形、状態を持つブロック、ブロックのドロップ（ルートテーブル）、道具の条件は変換しない。

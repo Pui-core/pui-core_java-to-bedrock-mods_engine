@@ -58,7 +58,7 @@ def fetchGeyserApi = tasks.register('fetchGeyserApi') {
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-	// 使うのはサーバーのライフサイクルイベントだけ
+	// サーバーのライフサイクルと、任意の Bedrock 移動機能でコマンド登録を使う
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
 	// core（解析・IR・接続ゲートの判定）を同梱する。Gson は Minecraft 本体のものを使うので同梱しない

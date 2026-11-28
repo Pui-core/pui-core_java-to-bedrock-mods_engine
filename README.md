@@ -11,7 +11,7 @@ Java Edition の MOD を、Bedrock Edition のプレイヤーが改造なしの�
 |---|---|---|
 | A: Java MOD サーバー接続 | Fabric サーバー + Geyser + Hydraulic | Bedrock 2人の同時入場と試験用ブロックの設置・破壊の同期を確認（[試験結果](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証)） |
 | B: Bedrock ネイティブ変換 | BDS / ローカルワールド | Windows のローカルワールドで基本素材の描画と作業台のレシピを確認。公式 BDS は未検証（[ADR-0006](docs/adr/0006-mode-b-behavior-pack.md)） |
-| C: プロキシ・複数サーバー | 各 Java バックエンド | 未着手（v0.6.0） |
+| C: プロキシ・複数サーバー | Geyser/Fabric と独立 BDS | 配置設定の検査、接続先の監視、明示的な Bedrock 移動。実機試験は後日 |
 
 ## 必要なもの
 
@@ -113,6 +113,76 @@ MODBRIDGE_ACCEPT_EULA=true scripts/spike-server.sh --floodgate --keep-running
 ```
 
 `--floodgate` は `local/mode-a-server` に専用ワールドを作ります。Java 版は認証付きでこの PC の `127.0.0.1:25565`、Bedrock 版は Floodgate 認証付きで `--keep-running` 時に LAN のポート `19132` から接続できます。操作・再接続・ワールドの再起動を確認する手順は [ADR-0005](docs/adr/0005-mode-a-connection-gate.md#v010-の認証実機検証) にあります。
+
+## 複数バックエンドの運用（v0.6.0 開発版）
+
+Geyser/Fabric の MOD サーバーと BDS は、認証設定、パック、ワールド、プレイヤーデータを個別に管理します。既存の Paper/Velocity は別の入口とポートで運用できます。Velocity の modern forwarding を使って Java 側も接続する場合は、対応するバックエンドと private な転送経路を用意します。[Velocity の設定](https://docs.papermc.io/velocity/player-information-forwarding/) [Floodgate の設定](https://geysermc.org/wiki/floodgate/setup/)
+
+- **単独サーバー**では `DIRECT` に接続先を1件指定します。認証とパックの受け入れはそのサーバーが行います。
+- **VPS から自宅・WSL へ転送**する場合、現行の NetherNet は `NETHERNET_FORWARD` を使います。Geyser の内蔵シグナリングの TCP と WebRTC の UDP を、同一公開ポートから private ネットワークのバックエンドへそれぞれ転送します。TCP は内蔵シグナリングの設定先、UDP は bedrock.webrtc-port の設定先に転送します。シグナリングで HTTP と HTTPS のどちらを使うかはクライアントの信頼設定に合わせます。固定版 Geyser 2.12.1-b1312 は RakNet 単独設定を受け付けません。NAT 越しには、到達可能な公開 UDP アドレスとポートを `advertise-addresses` に設定します。バックエンドは VPS または VPN からだけ到達できるようにし、公開側とバックエンド側を別々に監視します。RakNet を提供する旧構成の UDP 転送には `UDP_FORWARD` を使えます。[Geyser のポート転送](https://geysermc.org/wiki/geyser/port-forwarding/) [NetherNet と NAT の設定](https://geysermc.org/blog/preparing-for-nethernet/)
+- **サーバー間の移動**は `BEDROCK_TRANSFER` で運用者が登録した接続先へ、Bedrock クライアントが新しく接続します。移動先で改めて入場判定とパック受け入れが行われます。ワールドや持ち物は各バックエンドのデータを使います。移動を受け付けない端末ではサーバー一覧から接続します。
+
+運用設定の例です。`client` はプレイヤーの端末から接続できるアドレス、`probe` は監視を実行する場所から到達できるアドレスです。同じ通信方式で同じ監視先は登録できません。DNS の別名が同じサーバーを指すかは配備時に確認します。`stateDirectory` は配備先の保存ディレクトリを区別する名前です。実際のサービスにも、それぞれ異なる作業・保存ディレクトリを指定します。
+
+```json
+{
+  "schemaVersion": 1,
+  "topology": "BEDROCK_TRANSFER",
+  "backends": [
+    {
+      "id": "fabric",
+      "kind": "GEYSER",
+      "transport": "NETHERNET",
+      "client": {"host": "fabric.example.org", "port": 19132},
+      "probe": {"host": "fabric.internal.example.org", "port": 19132},
+      "stateDirectory": "fabric-world"
+    },
+    {
+      "id": "bedrock",
+      "kind": "BDS",
+      "transport": "NETHERNET",
+      "client": {"host": "bedrock.example.org", "port": 19244},
+      "probe": {"host": "bedrock.internal.example.org", "port": 19244},
+      "stateDirectory": "bedrock-world"
+    }
+  ]
+}
+```
+
+```sh
+modbridge ops-check /etc/modbridge/topology.json
+modbridge ops-check /etc/modbridge/topology.json --probe
+```
+
+`--probe` は、RakNet では Bedrock のオフライン ping、NetherNet では設定先の TCP 接続の成否をバックエンドごとに JSON へ出力します。観測先が1件でも応答しなければ終了コード1を返します。TCP 接続に成功しても、NetherNet の WebRTC 経路や入場、ワールドの読込、パック適用は実クライアントで確認します。サンプルの Fabric 側では Geyser の `bedrock.transport` を `nethernet` に設定します。Geyser/Fabric で `-Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric` を付けると、認証済みの Bedrock セッションから `/modbridge-travel bedrock` を実行できます。
+
+Linux の Fabric サーバー用 systemd の例です。`fabric` 専用のサービスアカウントを使い、ほかのワールドは別ユニットで管理します。
+
+```ini
+[Unit]
+Description=ModBridge Fabric backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=modbridge-fabric
+WorkingDirectory=/srv/modbridge/fabric-world
+ExecStart=/usr/bin/java -Dmodbridge.travelConfig=/etc/modbridge/topology.json -Dmodbridge.travelOrigin=fabric -jar fabric-server.jar nogui
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+SuccessExitStatus=143
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+監視用の oneshot サービスまたは既存監視から `modbridge ops-check /etc/modbridge/topology.json --probe` を定期実行し、終了コード、個別バックエンドの応答、サービスログを通知に使います。片方が落ちた場合も、他方のプロセスやデータを共有しないため、稼働側を独立して扱えます。
+
+更新前に対象サービスを停止して、ワールドとプレイヤーデータ、設定、MOD、配布パックを組で保存します。バックアップから別ディレクトリに復元して確認してから切り戻します。BDS のパック配置と復旧には `bds-install` と `bds-rollback` を使えます。秘密鍵と forwarding secret はサービスの管理領域に置きます。LAN／公開入口を通した再接続、別パックへの移動、障害復旧の実機試験は別途記録します。
+
 
 ## 構成
 

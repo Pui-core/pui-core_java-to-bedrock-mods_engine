@@ -87,7 +87,31 @@ public final class BdsInstaller {
         }
     }
 
-    private record Pack(String uuid, List<Integer> version, JsonObject manifest, Map<String, byte[]> files) {}
+    private record Pack(String uuid, List<Integer> version, JsonObject manifest, Map<String, byte[]> files) {
+        PackReference reference() {
+            return new PackReference(uuid, version);
+        }
+    }
+
+    private record PackReference(String uuid, List<Integer> version) {
+        boolean matches(JsonObject entry, String uuidKey) {
+            return entry.get(uuidKey) instanceof JsonPrimitive id && id.isString()
+                    && uuid.equalsIgnoreCase(id.getAsString()) && matchesVersion(entry.get("version"), version);
+        }
+
+        boolean sameAs(PackReference other) {
+            return other != null && uuid.equalsIgnoreCase(other.uuid()) && version.equals(other.version());
+        }
+    }
+
+    private record SharedPack(String folder, String worldList) {
+        PackReference savedIn(Backup backup) {
+            return backup.existed().get(folder) ? installedReference(backup.dir().resolve(folder)) : null;
+        }
+    }
+
+    private static final SharedPack SHARED_BP = new SharedPack("behavior_packs/" + BP_DIR, "world_behavior_packs.json");
+    private static final SharedPack SHARED_RP = new SharedPack("resource_packs/" + RP_DIR, "world_resource_packs.json");
 
     private record Bundle(Pack behavior, Pack resource) {}
 
@@ -145,7 +169,7 @@ public final class BdsInstaller {
             if (!Files.isDirectory(worldDir, LinkOption.NOFOLLOW_LINKS)) {
                 problems.add("ワールド worlds/" + w + " が無い。BDS を一度起動してワールドを作ってから配置する");
             }
-            for (String dir : List.of("behavior_packs/" + BP_DIR, "resource_packs/" + RP_DIR)) {
+            for (String dir : List.of(SHARED_BP.folder(), SHARED_RP.folder())) {
                 Path p = root.resolve(dir);
                 if (Files.isSymbolicLink(p)) {
                     problems.add(dir + " がシンボリックリンクになっている");
@@ -160,6 +184,14 @@ public final class BdsInstaller {
                         "resource_packs/" + RP_DIR, "リソースパック " + rp.uuid() + " " + rp.version() + "（" + rp.files().size() + " ファイル）"));
                 actions.add(new Action("UPDATE_JSON", "worlds/" + w + "/world_behavior_packs.json", "pack_id " + bp.uuid() + " を " + bp.version() + " にする"));
                 actions.add(new Action("UPDATE_JSON", "worlds/" + w + "/world_resource_packs.json", "pack_id " + rp.uuid() + " を " + rp.version() + " にする"));
+                if (problems.isEmpty()) {
+                    try {
+                        checkSharedPacks(root, worldDir, bp.reference(), rp.reference());
+                    } catch (IOException e) {
+                        problems.add("別ワールドの共有パックを確認できない（" + message(e) + "）");
+                        actions.clear();
+                    }
+                }
             }
         }
         return new PreparedPlan(new Plan(w, List.copyOf(actions), List.copyOf(problems),
@@ -203,6 +235,7 @@ public final class BdsInstaller {
             otherWorlds.ensureHeld();
             lock.ensureHeld();
             mutation.ensureHeld();
+            checkSharedPacks(root, worldDir, bp.reference(), rp.reference());
             String id = backup(root, plan.world());
             try {
                 // 前回と違うパック ID で作り直した場合に備えて、いま入っているパックの UUID の項目も置き換える
@@ -243,6 +276,104 @@ public final class BdsInstaller {
         }
     }
 
+    private static PackReference installedReference(Path packDir) {
+        JsonObject manifest = readJson(packDir.resolve("manifest.json"));
+        if (manifest == null || !(manifest.get("header") instanceof JsonObject header)
+                || !(header.get("uuid") instanceof JsonPrimitive uuid) || !uuid.isString()) {
+            return null;
+        }
+        JsonElement version = header.get("version");
+        try {
+            if (version instanceof JsonPrimitive dotted && dotted.isString()) {
+                String[] parts = dotted.getAsString().split("\\.", -1);
+                if (parts.length == 3) {
+                    return new PackReference(uuid.getAsString(),
+                            List.of(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])));
+                }
+            }
+            if (version instanceof JsonArray array && array.size() == 3) {
+                return new PackReference(uuid.getAsString(), List.of(array.get(0).getAsBigDecimal().intValueExact(),
+                        array.get(1).getAsBigDecimal().intValueExact(), array.get(2).getAsBigDecimal().intValueExact()));
+            }
+        } catch (IllegalStateException | UnsupportedOperationException | IllegalArgumentException | ArithmeticException e) {
+            return null;
+        }
+        return null;
+    }
+
+    private static void checkSharedPacks(Path root, Path world, PackReference bp, PackReference rp) throws IOException {
+        checkSharedPack(root, world, SHARED_BP, bp);
+        checkSharedPack(root, world, SHARED_RP, rp);
+    }
+
+    private static void checkSharedPack(Path root, Path world, SharedPack pack, PackReference next) throws IOException {
+        Path managed = root.resolve(pack.folder());
+        PackReference current = installedReference(managed);
+        if (current == null || current.sameAs(next)) {
+            return;
+        }
+        List<Path> peers = otherWorlds(world);
+        for (Path peer : peers) {
+            Path registration = peer.resolve(pack.worldList());
+            JsonArray entries;
+            try {
+                entries = readWorldPacks(registration);
+            } catch (IOException e) {
+                throw new IOException("worlds/" + peer.getFileName() + "/" + pack.worldList() + " を読めない", e);
+            }
+            boolean used = entries.asList().stream().anyMatch(entry ->
+                    entry instanceof JsonObject object && current.matches(object, "pack_id"));
+            if (used && !containsCopy(managed.getParent(), managed, current)
+                    && !containsCopy(peer.resolve(managed.getParent().getFileName()), managed, current)) {
+                throw new IOException("worlds/" + peer.getFileName() + " が共有パック " + pack.folder()
+                        + " の版 " + current.version() + " を使っている");
+            }
+        }
+    }
+
+    private static boolean containsCopy(Path folder, Path managed, PackReference reference) throws IOException {
+        if (Files.notExists(folder, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try (Stream<Path> dirs = Files.list(folder)) {
+            for (var candidates = dirs.iterator(); candidates.hasNext();) {
+                Path candidate = candidates.next();
+                if (Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS) && !Files.isSameFile(candidate, managed)
+                        && reference.sameAs(installedReference(candidate)) && samePackFiles(managed, candidate)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static boolean samePackFiles(Path source, Path candidate) throws IOException {
+        // 同じ UUID・版の manifest だけが置かれた不完全なコピーは代替にならない。
+        try (Stream<Path> original = Files.walk(source); Stream<Path> copy = Files.walk(candidate)) {
+            List<Path> originalPaths = original.map(source::relativize).sorted().toList();
+            List<Path> copyPaths = copy.map(candidate::relativize).sorted().toList();
+            if (!originalPaths.equals(copyPaths)) {
+                return false;
+            }
+            for (Path relative : originalPaths) {
+                Path from = source.resolve(relative);
+                Path to = candidate.resolve(relative);
+                if (Files.isDirectory(from, LinkOption.NOFOLLOW_LINKS) && Files.isDirectory(to, LinkOption.NOFOLLOW_LINKS)) {
+                    continue;
+                }
+                if (!Files.isRegularFile(from, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(to, LinkOption.NOFOLLOW_LINKS)
+                        || Files.mismatch(from, to) != -1) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
     /**
      * バックアップから戻す。apply と同じく、止めたことの明示とロックが要る。
      *
@@ -269,6 +400,7 @@ public final class BdsInstaller {
             otherWorlds.ensureHeld();
             WorldLock.acquire(worldDir).close();
             mutation.ensureHeld();
+            checkSharedPacks(root, worldDir, SHARED_BP.savedIn(b), SHARED_RP.savedIn(b));
             restore(root, b, true);
             try {
                 WorldLock.acquire(worldDir).close();
@@ -283,6 +415,21 @@ public final class BdsInstaller {
     }
 
     // ---- ロック ----
+
+    private static List<Path> otherWorlds(Path target) throws IOException {
+        Path worldsDir = target.getParent();
+        if (Files.notExists(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
+            return List.of();
+        }
+        if (!Files.isDirectory(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
+            throw new LockedException();
+        }
+        try (Stream<Path> paths = Files.list(worldsDir)) {
+            return paths.filter(path -> !path.equals(target) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList();
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
 
     /** 同じ BDS フォルダーを更新する ModBridge の処理を、プロセス間と JVM 内で排他する。 */
     static final class MutationLock implements AutoCloseable {
@@ -368,21 +515,8 @@ public final class BdsInstaller {
         }
 
         static WorldLock acquireOthers(Path target) throws IOException {
-            Path worldsDir = target.getParent();
-            if (Files.notExists(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
-                return new WorldLock();
-            }
-            if (!Files.isDirectory(worldsDir, LinkOption.NOFOLLOW_LINKS)) {
-                throw new LockedException();
-            }
-            List<Path> others;
-            try (Stream<Path> paths = Files.list(worldsDir)) {
-                // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
-                others = paths.filter(path -> !path.equals(target) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList();
-            } catch (UncheckedIOException e) {
-                throw e.getCause();
-            }
-            return acquire(others);
+            // RP/BP は BDS 全体で共有される。起動後に level-name を変えた場合にも、元の DB を検査する。
+            return acquire(otherWorlds(target));
         }
 
         private static WorldLock acquire(List<Path> worlds) throws IOException {
@@ -482,7 +616,7 @@ public final class BdsInstaller {
 
     /** バックアップの対象（ワールド名から決まる 3 つ）。 */
     private static List<String> targets(String world) {
-        return List.of("worlds/" + world, "behavior_packs/" + BP_DIR, "resource_packs/" + RP_DIR);
+        return List.of("worlds/" + world, SHARED_BP.folder(), SHARED_RP.folder());
     }
 
     private static String backup(Path root, String world) throws IOException {
@@ -730,25 +864,14 @@ public final class BdsInstaller {
         mine.add("version", GSON.toJsonTree(pack.version()));
         JsonArray arr = new JsonArray();
         boolean placed = false;
-        if (Files.exists(file)) {
-            JsonElement e;
-            try {
-                e = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
-            } catch (JsonParseException ex) {
-                throw new IOException(file.getFileName() + " が JSON として読めない");
-            }
-            if (!(e instanceof JsonArray a)) {
-                throw new IOException(file.getFileName() + " が配列ではない");
-            }
-            for (JsonElement x : a) {
-                String id = x instanceof JsonObject o && o.get("pack_id") instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
-                boolean ours = id != null && (id.equals(pack.uuid()) || id.equals(previousUuid));
-                if (!ours) {
-                    arr.add(x);
-                } else if (!placed) {
-                    arr.add(mine);
-                    placed = true;
-                }
+        for (JsonElement x : readWorldPacks(file)) {
+            String id = x instanceof JsonObject o && o.get("pack_id") instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
+            boolean ours = id != null && (id.equals(pack.uuid()) || id.equals(previousUuid));
+            if (!ours) {
+                arr.add(x);
+            } else if (!placed) {
+                arr.add(mine);
+                placed = true;
             }
         }
         if (!placed) {
@@ -764,6 +887,22 @@ public final class BdsInstaller {
     }
 
     // ---- 読込 ----
+
+    private static JsonArray readWorldPacks(Path file) throws IOException {
+        if (Files.notExists(file)) {
+            return new JsonArray();
+        }
+        JsonElement value;
+        try {
+            value = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8));
+        } catch (JsonParseException ex) {
+            throw new IOException(file.getFileName() + " が JSON として読めない", ex);
+        }
+        if (!(value instanceof JsonArray entries)) {
+            throw new IOException(file.getFileName() + " が配列ではない");
+        }
+        return entries;
+    }
 
     private static String levelName(Path root, List<String> problems) {
         Path props = root.resolve("server.properties");
